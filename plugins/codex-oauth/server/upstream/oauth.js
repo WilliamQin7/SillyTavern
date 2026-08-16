@@ -162,7 +162,7 @@ export class LoopbackLoginManager {
             active.timeout = setTimeout(() => this.#fail(active, 'OAuth login timed out.'), this.timeoutMs);
             const url = buildAuthorizationUrl({ redirectUri: OAUTH_REDIRECT_URI, pkce, state });
             await this.openBrowser(url);
-            this.logger.info?.('[codex-oauth] login started');
+            this.logger.info?.('login started');
             return { started: true };
         } catch (error) {
             await this.#clear(active);
@@ -175,7 +175,7 @@ export class LoopbackLoginManager {
         const active = this.active;
         if (!active || active.userKey !== userKey) return false;
         await this.#clear(active);
-        this.logger.info?.('[codex-oauth] login cancelled');
+        this.logger.info?.('login cancelled');
         return true;
     }
 
@@ -219,7 +219,6 @@ export class LoopbackLoginManager {
         if (this.active !== active || state !== active.state) {
             response.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
             response.end(callbackPage('Sign-in failed', 'The sign-in state could not be verified. Start sign-in again from SillyTavern.'));
-            await this.#clear(active);
             return;
         }
         if (oauthError || !code) {
@@ -232,12 +231,12 @@ export class LoopbackLoginManager {
         try {
             const tokens = await this.exchangeCode({ code, verifier: active.pkce.verifier, redirectUri: OAUTH_REDIRECT_URI });
             await active.onTokens(tokens);
-            this.logger.info?.('[codex-oauth] login succeeded');
+            this.logger.info?.('login succeeded');
             response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
             response.end(callbackPage('Sign-in complete', 'ChatGPT is connected.'));
             await this.#clear(active);
         } catch (error) {
-            this.logger.warn?.('[codex-oauth] login failed');
+            this.logger.warn?.('login failed');
             response.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
             response.end(callbackPage('Sign-in failed', 'ChatGPT sign-in could not be completed. Start it again from SillyTavern.'));
             await this.#clear(active);
@@ -247,7 +246,7 @@ export class LoopbackLoginManager {
     async #fail(active) {
         if (this.active !== active) return;
         await this.#clear(active);
-        this.logger.warn?.('[codex-oauth] login timed out');
+        this.logger.warn?.('login timed out');
     }
 
     async #clear(active) {

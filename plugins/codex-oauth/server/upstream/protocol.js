@@ -99,5 +99,5 @@ export function responseEventTextDelta(event) {
 }
 
 export function responseEventFailed(event) {
-    return ['error', 'response.failed', 'response.incomplete'].includes(event?.type);
+    return ['error', 'response.failed'].includes(event?.type);
 }

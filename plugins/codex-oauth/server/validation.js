@@ -5,6 +5,17 @@ const SPEED_MODES = new Set(['standard', 'fast']);
 const LOG_LEVELS = new Set(['brief', 'normal', 'detailed']);
 const IMAGE_SIZES = new Set(['auto', '1024x1024', '1024x1536', '1536x1024']);
 const IMAGE_QUALITIES = new Set(['auto', 'low', 'medium', 'high']);
+const MODEL_ID_LIMIT = 100;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
+function assertModelId(model) {
+    if (typeof model !== 'string' || model.trim().length === 0) {
+        throw new CodexProviderError('MODEL_REQUIRED', 'Choose a Codex model or enter a model ID.', { status: 400 });
+    }
+    if (model.length > MODEL_ID_LIMIT || CONTROL_CHARACTERS.test(model)) {
+        throw new CodexProviderError('INVALID_MODEL', 'The Codex model ID is invalid.', { status: 400 });
+    }
+}
 
 function assertContent(content) {
     if (typeof content === 'string') return;
@@ -29,9 +40,7 @@ export function validateGenerateRequest(body) {
     if (Array.isArray(body.tools) && body.tools.length > 0) {
         throw new CodexProviderError('TOOLS_UNSUPPORTED', 'This Codex provider does not send SillyTavern tool schemas.', { status: 400 });
     }
-    if (typeof body.model !== 'string' || body.model.trim().length === 0) {
-        throw new CodexProviderError('MODEL_REQUIRED', 'Choose a Codex model or enter a model ID.', { status: 400 });
-    }
+    assertModelId(body.model);
 }
 
 export function requestedReasoningEffort(body) {
@@ -62,9 +71,7 @@ export function validateImageRequest(body) {
     if (typeof body.prompt !== 'string' || body.prompt.trim().length === 0 || body.prompt.length > 32_000) {
         throw new CodexProviderError('INVALID_IMAGE_PROMPT', 'Image prompt must contain between 1 and 32,000 characters.', { status: 400 });
     }
-    if (typeof body.model !== 'string' || body.model.trim().length === 0 || body.model.length > 100) {
-        throw new CodexProviderError('MODEL_REQUIRED', 'Choose a Codex model before generating an image.', { status: 400 });
-    }
+    assertModelId(body.model);
     if (!IMAGE_SIZES.has(body.size)) {
         throw new CodexProviderError('INVALID_IMAGE_SIZE', 'Choose a supported Codex image size.', { status: 400 });
     }

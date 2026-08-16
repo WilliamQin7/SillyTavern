@@ -62,7 +62,7 @@ test('account ID is read from the ChatGPT OAuth claims without exposing a token'
     assert.equal(extractAccountId({ access_token: 'not-a-jwt' }), undefined);
 });
 
-test('loopback callback rejects a bad state and saves only a matching callback', async () => {
+test('loopback callback rejects a bad state without cancelling the matching transaction', async () => {
     const opened = [];
     const saved = [];
     const manager = new LoopbackLoginManager({
@@ -81,13 +81,8 @@ test('loopback callback rejects a bad state and saves only a matching callback',
     assert.equal(bad.status, 400);
     assert.equal(saved.length, 0);
 
-    // The bad callback cleared the first transaction; begin a new one for the
-    // matching-state success path.
-    await manager.start({ userKey: 'user-a', onTokens: async tokens => saved.push(tokens) });
-    const successUrl = new URL(opened[1]);
-    const successServer = manager.active.servers[0];
-    const successAddress = successServer.address();
-    const good = await fetch(`http://127.0.0.1:${successAddress.port}/auth/callback?code=good&state=${encodeURIComponent(successUrl.searchParams.get('state'))}`);
+    const successUrl = new URL(opened[0]);
+    const good = await fetch(`${base}?code=good&state=${encodeURIComponent(successUrl.searchParams.get('state'))}`);
     assert.equal(good.status, 200);
     assert.deepEqual(saved, [{ access_token: 'access-good', refresh_token: 'refresh' }]);
     await manager.shutdown();

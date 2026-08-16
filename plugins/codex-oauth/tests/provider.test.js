@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { adaptImageRequest } from '../server/adapter.js';
 import { EncryptedCredentialStore } from '../server/credentials.js';
-import { collectCodexImage } from '../server/stream.js';
+import { collectCodexImage, collectCodexStream, forwardCodexStream } from '../server/stream.js';
 import { ModelCatalog } from '../server/upstream/models.js';
 import { validateImageRequest } from '../server/validation.js';
 
@@ -68,6 +68,47 @@ test('image stream returns bytes without mixing in text events', async () => {
         ]),
     });
     assert.deepEqual(image, { data: 'aW1hZ2U=', revisedPrompt: 'A refined prompt' });
+});
+
+test('an incomplete text response remains a normal length-limited completion', async () => {
+    const response = await collectCodexStream({
+        upstreamBody: sseBody([
+            { type: 'response.output_text.delta', delta: 'partial reply' },
+            { type: 'response.incomplete', response: { id: 'response-1', status: 'incomplete' } },
+        ]),
+        model: 'gpt-5.5',
+        requestId: 'request-1',
+    });
+    assert.equal(response.output_text, 'partial reply');
+    assert.equal(response.status, 'incomplete');
+});
+
+test('an incomplete streaming response ends with the length finish reason', async () => {
+    const writes = [];
+    const response = {
+        writableEnded: false,
+        destroyed: false,
+        write(chunk) {
+            writes.push(chunk);
+            return true;
+        },
+    };
+    await forwardCodexStream({
+        upstreamBody: sseBody([
+            { type: 'response.output_text.delta', delta: 'partial reply' },
+            { type: 'response.incomplete', response: { id: 'response-1', status: 'incomplete' } },
+        ]),
+        response,
+        model: 'gpt-5.5',
+        requestId: 'request-1',
+    });
+
+    const events = writes
+        .map(chunk => chunk.match(/^data: (.+)\n\n$/)?.[1])
+        .filter(data => data && data !== '[DONE]')
+        .map(data => JSON.parse(data));
+    assert.equal(events.at(-1).choices[0].finish_reason, 'length');
+    assert.equal(writes.at(-1), 'data: [DONE]\n\n');
 });
 
 test('image validation rejects unbounded inputs and unknown options', () => {

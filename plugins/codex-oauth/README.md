@@ -35,9 +35,12 @@ credential file unreadable and requires signing in again.
 ## Use
 
 1. Enable server plugins and restart SillyTavern.
-2. In API Connections, select `Codex (ChatGPT)` and click `Sign in to ChatGPT`.
+2. In API Connections, select `Codex (ChatGPT)`. An administrator's existing
+   Codex Desktop/CLI login is detected automatically; otherwise click
+   `Sign in to ChatGPT`.
 3. For images, open Image Generation and select
-   `Codex (ChatGPT subscription)`.
+   `Codex (ChatGPT subscription)`, or run `/imagine-source codex` before using
+   `/imagine <prompt>`.
 
 The image source reuses the selected Codex chat model and the same encrypted
 login. No OpenAI API key is required.

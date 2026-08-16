@@ -166,7 +166,7 @@ export async function collectCodexStream({ upstreamBody, model, requestId, onEve
     for await (const event of codexEvents(upstreamBody)) {
         onEvent?.(event);
         text += responseEventTextDelta(event);
-        if (event.type === 'response.completed') completed = event.response ?? event;
+        if (event.type === 'response.completed' || event.type === 'response.incomplete') completed = event.response ?? event;
     }
     return {
         id: completed?.id ?? requestId,
@@ -180,8 +180,10 @@ export async function collectCodexStream({ upstreamBody, model, requestId, onEve
 
 /** Streams Codex Responses SSE into SillyTavern's native Chat Completion SSE contract. */
 export async function forwardCodexStream({ upstreamBody, response, model, requestId, onEvent }) {
+    let finishReason = 'stop';
     for await (const event of codexEvents(upstreamBody)) {
         onEvent?.(event);
+        if (event.type === 'response.incomplete') finishReason = 'length';
         const delta = responseEventTextDelta(event);
         // Codex emits lifecycle/reasoning events before visible text. Convert
         // those to harmless no-op chunks so the downstream stream remains
@@ -196,7 +198,7 @@ export async function forwardCodexStream({ upstreamBody, response, model, reques
         id: requestId,
         model,
         delta: {},
-        finishReason: 'stop',
+        finishReason,
     }));
     writeSse(response, '[DONE]');
 }

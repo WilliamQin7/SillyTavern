@@ -48,3 +48,9 @@ test('request validation rejects tool schemas rather than silently passing them 
         tools: [{ type: 'function' }],
     }), error => error.code === 'TOOLS_UNSUPPORTED');
 });
+
+test('request validation rejects model IDs that can inject log lines or exceed the bounded field', () => {
+    const request = model => ({ model, messages: [{ role: 'user', content: 'hello' }] });
+    assert.throws(() => validateGenerateRequest(request('gpt-5.5\nforged-log-line')), error => error.code === 'INVALID_MODEL');
+    assert.throws(() => validateGenerateRequest(request('x'.repeat(101))), error => error.code === 'INVALID_MODEL');
+});
