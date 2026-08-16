@@ -15,7 +15,9 @@ public/NovelAI Settings/
 public/TextGen Settings/
 public/instruct/
 public/context/
-public/scripts/extensions/third-party/
+public/scripts/extensions/third-party/*
+!public/scripts/extensions/third-party/.gitkeep
+!public/scripts/extensions/third-party/codex-oauth/
 public/stats.json
 /uploads/
 *.jsonl
@@ -47,10 +49,12 @@ access.log
 /cache/
 public/css/user.css
 public/error/
-/plugins/
+/plugins/*
+!/plugins/.gitkeep
+!/plugins/package.json
+!/plugins/codex-oauth/
 /data
 /default/scaffold
-public/scripts/extensions/third-party
 /certs
 .aider*
 .env

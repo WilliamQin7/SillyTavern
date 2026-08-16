@@ -1,0 +1,28 @@
+.codex-oauth-panel {
+    gap: 0.5rem;
+    margin: 0.75rem 0;
+    padding: 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 65%, transparent);
+    border-radius: 0.5rem;
+}
+
+.codex-oauth-status.success { color: var(--SmartThemeQuoteColor); }
+.codex-oauth-status.failure { color: var(--SmartThemeWarningColor); }
+
+.codex-oauth-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+/* SillyTavern's generic .menu_button uses width: min-content, which breaks CJK labels one character per line. */
+.codex-oauth-actions .menu_button {
+    width: auto;
+    min-width: max-content;
+    min-height: 2.25rem;
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+#codex-oauth-prompt-debug { max-height: 12rem; overflow: auto; white-space: pre-wrap; }

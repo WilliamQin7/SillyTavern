@@ -1,0 +1,14 @@
+{
+    "display_name": "Codex (ChatGPT) OAuth Provider",
+    "loading_order": 25,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "SillyTavern Codex OAuth Provider contributors",
+    "version": "0.1.0",
+    "homePage": "https://github.com/SillyTavern/SillyTavern",
+    "hooks": {
+        "activate": "init"
+    }
+}

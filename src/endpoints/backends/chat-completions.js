@@ -32,6 +32,7 @@ import {
     trimTrailingSlash,
     flattenSchema,
 } from '../../util.js';
+import { getChatCompletionProvider } from '../../chat-completion-provider-registry.js';
 import {
     convertClaudeMessages,
     convertGooglePrompt,
@@ -1736,6 +1737,11 @@ router.post('/status', async function (request, statusResponse) {
     try {
         if (!request.body) return statusResponse.sendStatus(400);
 
+        const pluginProvider = getChatCompletionProvider(request.body.chat_completion_source);
+        if (pluginProvider?.status) {
+            return await pluginProvider.status(request, statusResponse);
+        }
+
         let apiUrl = '';
         let apiKey = '';
         let headers = {};
@@ -2169,6 +2175,13 @@ router.post('/generate', async function (request, response) {
 
         if (request.body.json_schema?.value) {
             request.body.json_schema.value = flattenSchema(request.body.json_schema.value, request.body.chat_completion_source);
+        }
+
+        // Server plugins receive the final SillyTavern request so credentials
+        // stay in the authenticated, user-scoped server context.
+        const pluginProvider = getChatCompletionProvider(request.body.chat_completion_source);
+        if (pluginProvider?.generate) {
+            return await pluginProvider.generate(request, response);
         }
 
         switch (request.body.chat_completion_source) {

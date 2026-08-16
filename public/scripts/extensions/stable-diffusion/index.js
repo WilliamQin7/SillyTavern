@@ -80,6 +80,7 @@ const sources = {
     openai: 'openai',
     aimlapi: 'aimlapi',
     comfy: 'comfy',
+    codex: 'codex-oauth',
     togetherai: 'togetherai',
     drawthings: 'drawthings',
     pollinations: 'pollinations',
@@ -1696,6 +1697,7 @@ async function loadSamplers() {
             samplers = await loadVladSamplers();
             break;
         case sources.openai:
+        case sources.codex:
             samplers = ['N/A'];
             break;
         case sources.aimlapi:
@@ -1950,6 +1952,9 @@ async function loadModels() {
             break;
         case sources.openai:
             models = await loadOpenAiModels();
+            break;
+        case sources.codex:
+            models = [{ value: 'codex-image-generation', text: 'Codex native image generation' }];
             break;
         case sources.aimlapi:
             models = await loadAimlapiModels();
@@ -2593,6 +2598,7 @@ async function loadSchedulers() {
             schedulers = ['N/A'];
             break;
         case sources.openai:
+        case sources.codex:
             schedulers = ['N/A'];
             break;
         case sources.aimlapi:
@@ -2716,6 +2722,7 @@ async function loadVaes() {
             vaes = ['N/A'];
             break;
         case sources.openai:
+        case sources.codex:
             vaes = ['N/A'];
             break;
         case sources.aimlapi:
@@ -3360,6 +3367,9 @@ async function sendGenerationRequest(generationType, prompt, additionalNegativeP
                 break;
             case sources.openai:
                 result = await generateOpenAiImage(prefixedPrompt, signal);
+                break;
+            case sources.codex:
+                result = await generateCodexImage(prefixedPrompt, signal);
                 break;
             case sources.aimlapi:
                 result = await generateAimlapiImage(prefixedPrompt, signal);
@@ -4164,6 +4174,30 @@ async function generateOpenAiImage(prompt, signal) {
         const text = await result.text();
         throw new Error(text);
     }
+}
+
+/** Generate an image with the server-side Codex subscription credential. */
+async function generateCodexImage(prompt, signal) {
+    const provider = extension_settings.codex_oauth ?? {};
+    const model = String(provider.manualModel || provider.model || 'gpt-5.4').trim();
+    const aspectRatio = extension_settings.sd.width / extension_settings.sd.height;
+    const size = aspectRatio < 0.9
+        ? '1024x1536'
+        : (aspectRatio > 1.1 ? '1536x1024' : '1024x1024');
+    const quality = ['auto', 'low', 'medium', 'high'].includes(extension_settings.sd.openai_quality_gpt)
+        ? extension_settings.sd.openai_quality_gpt
+        : 'auto';
+    const result = await fetch('/api/plugins/codex-oauth/image', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        signal,
+        body: JSON.stringify({ prompt, model, size, quality }),
+    });
+    const data = await result.json().catch(() => ({}));
+    if (!result.ok) {
+        throw new Error(data?.error?.message || 'Codex image generation failed.');
+    }
+    return { format: data.format || 'png', data: data.data };
 }
 
 /**
@@ -5091,6 +5125,8 @@ function isValidState() {
             return secret_state[SECRET_KEYS.NOVEL];
         case sources.openai:
             return secret_state[SECRET_KEYS.OPENAI];
+        case sources.codex:
+            return true;
         case sources.aimlapi:
             return secret_state[SECRET_KEYS.AIMLAPI];
         case sources.comfy:

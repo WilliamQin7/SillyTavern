@@ -82,6 +82,8 @@ import { accountStorage } from './util/AccountStorage.js';
 import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } from './constants.js';
 import { syncNanoGptProvidersForModel, syncOpenRouterProvidersForModel, updateNanoGptProvidersWarning, updateOpenRouterProvidersWarning } from './textgen-models.js';
 
+import { getExternalChatCompletionProvider } from './chat-completion-provider-registry.js';
+
 export {
     openai_messages_count,
     oai_settings,
@@ -1698,6 +1700,10 @@ function checkModerationError(data, { quiet = false } = {}) {
 export function getChatCompletionModel(settings = null) {
     settings = settings ?? oai_settings;
     const source = settings.chat_completion_source;
+    const externalProvider = getExternalChatCompletionProvider(source);
+    if (externalProvider) {
+        return String(externalProvider.getModel(settings) ?? '');
+    }
     switch (source) {
         case chat_completion_sources.CLAUDE:
             return settings.claude_model;
@@ -2649,6 +2655,8 @@ export async function createGenerationParameters(settings, model, type, messages
     }
     messages = messages.filter(msg => msg && typeof msg === 'object');
 
+    const externalProvider = getExternalChatCompletionProvider(settings.chat_completion_source);
+
     // "OpenAI-like" sources
     const gptSources = [
         chat_completion_sources.OPENAI,
@@ -2776,8 +2784,14 @@ export async function createGenerationParameters(settings, model, type, messages
         }
     }
 
-    if (!canMultiSwipe && ToolManager.canPerformToolCalls(type, settings, model)) {
+    if (!canMultiSwipe && externalProvider?.capabilities?.tools !== false && ToolManager.canPerformToolCalls(type, settings, model)) {
         await ToolManager.registerFunctionToolsOpenAI(generate_data);
+    }
+
+    // External providers receive the assembled prompt and may only adjust
+    // provider-specific request fields.
+    if (externalProvider?.configureRequest) {
+        await externalProvider.configureRequest(generate_data, { settings, model, type, messages, jsonSchema });
     }
 
     // Empty array will produce a validation error

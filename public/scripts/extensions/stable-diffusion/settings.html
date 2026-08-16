@@ -46,6 +46,7 @@
                 <option value="chutes">Chutes</option>
                 <option value="workersai">Cloudflare Workers AI</option>
                 <option value="comfy">ComfyUI</option>
+                <option value="codex-oauth">Codex (ChatGPT subscription)</option>
                 <option value="drawthings">DrawThings HTTP API</option>
                 <option value="electronhub">Electron Hub</option>
                 <option value="extras">Extras API (deprecated)</option>
@@ -188,7 +189,8 @@
             <div data-sd-source="zai">
                 <b>Will use Common API. Coding API is not supported!</b>
             </div>
-            <div data-sd-source="openai,aimlapi,zai">
+            <div data-sd-source="openai,aimlapi,zai,codex-oauth">
+                <small data-sd-source="codex-oauth">Uses the Codex model and encrypted ChatGPT login configured under API Connections.</small>
                 <div class="flex-container">
                     <div data-sd-model="dall-e-3" class="flex1">
                         <label for="sd_openai_style" data-i18n="Image Style">Image Style</label>
@@ -197,7 +199,7 @@
                             <option value="natural">Natural</option>
                         </select>
                     </div>
-                    <div data-sd-model="gpt-image" class="flex1">
+                    <div data-sd-model="gpt-image,codex-image-generation" class="flex1">
                         <label for="sd_openai_quality_gpt" data-i18n="Image Quality">Image Quality</label>
                         <select id="sd_openai_quality_gpt" class="text_pole">
                             <option value="auto" data-i18n="Auto">Auto</option>
