@@ -5778,11 +5778,12 @@ export async function init() {
             if (!name) {
                 return extension_settings.sd.source;
             }
-            const isKnownSource = Object.keys(sources).includes(String(name));
+            const source = sources[String(name)] ?? String(name);
+            const isKnownSource = Object.values(sources).includes(source);
             if (!isKnownSource) {
                 throw new Error('The value provided is not a valid image generation source.');
             }
-            const option = document.querySelector(`#sd_source [value="${name}"]`);
+            const option = document.querySelector(`#sd_source [value="${source}"]`);
             if (!(option instanceof HTMLOptionElement)) {
                 throw new Error('Could not find the source option in the dropdown.');
             }
