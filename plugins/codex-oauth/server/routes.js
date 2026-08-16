@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { getCookieSecret } from '../../../src/users.js';
 import { adaptCodexResponse, adaptImageRequest, adaptSillyTavernRequest, capabilities } from './adapter.js';
-import { EncryptedCredentialStore } from './credentials.js';
+import { EncryptedCredentialStore, LayeredCredentialStore, SharedCodexCredentialSource } from './credentials.js';
 import {
     collectCodexImage,
     collectCodexStream,
@@ -101,13 +101,18 @@ export function createCodexService({
     const masterSecret = () => getCookieSecret(dataRoot);
     const getStore = (request) => {
         const user = userContext(request);
-        return credentialStoreFactory
-            ? credentialStoreFactory(user)
-            : new EncryptedCredentialStore({
-                filePath: path.join(user.root, CREDENTIAL_FILE_NAME),
-                masterSecret: masterSecret(),
-                identity: user.key,
-            });
+        if (credentialStoreFactory) return credentialStoreFactory(user);
+        const primary = new EncryptedCredentialStore({
+            filePath: path.join(user.root, CREDENTIAL_FILE_NAME),
+            masterSecret: masterSecret(),
+            identity: user.key,
+        });
+        return new LayeredCredentialStore({
+            primary,
+            // The machine-wide Codex sign-in belongs to the server owner. Never
+            // expose it to a non-admin SillyTavern account.
+            shared: request.user?.profile?.admin === true ? new SharedCodexCredentialSource({ logger: log }) : null,
+        });
     };
     const oauth = loginManager ?? new LoopbackLoginManager({ openBrowser, logger: log });
 
@@ -116,7 +121,10 @@ export function createCodexService({
             const credentials = await getStore(request).read();
             return {
                 authenticated: Boolean(credentials),
-                ...(credentials ? { account: { displayName: 'ChatGPT' } } : {}),
+                ...(credentials ? {
+                    account: { displayName: 'ChatGPT' },
+                    credentialSource: credentials.credentialSource || 'sillytavern',
+                } : {}),
                 upstream: { opencodeCommit: UPSTREAM_TRACKING.commit },
                 capabilities,
             };
@@ -125,6 +133,11 @@ export function createCodexService({
         async login(request) {
             const user = userContext(request);
             const store = getStore(request);
+            const reused = await store.enableShared?.();
+            if (reused) {
+                log.info('reused local Codex sign-in');
+                return { started: false, reused: true };
+            }
             await oauth.start({
                 userKey: user.key,
                 onTokens: async (tokens) => store.write(credentialsFromTokenResponse(tokens, now())),

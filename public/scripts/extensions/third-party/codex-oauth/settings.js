@@ -37,8 +37,9 @@ async function request(path, body = undefined, method = 'POST') {
 
 function setStatus(status, error = '') {
     const authenticated = Boolean(status?.authenticated);
+    const source = status?.credentialSource === 'codex-cli' ? ' · local Codex sign-in' : '';
     $('#codex-oauth-status').toggleClass('success', authenticated).toggleClass('failure', Boolean(error));
-    $('#codex-oauth-status').text(error || (authenticated ? '● Signed in' : '○ Not signed in'));
+    $('#codex-oauth-status').text(error || (authenticated ? `● Signed in${source}` : '○ Not signed in'));
     $('#codex-oauth-login').toggle(!authenticated);
     $('#codex-oauth-logout').toggle(authenticated);
     $('#codex-oauth-refresh-auth').toggle(authenticated);
@@ -139,7 +140,7 @@ function createPanel() {
             <div id="codex-oauth-status" class="codex-oauth-status">○ Not signed in</div>
             <div class="flex-container codex-oauth-actions">
                 <button id="codex-oauth-login" type="button" class="menu_button">Sign in to ChatGPT</button>
-                <button id="codex-oauth-logout" type="button" class="menu_button displayNone">Sign out</button>
+                <button id="codex-oauth-logout" type="button" class="menu_button displayNone">Disconnect from SillyTavern</button>
                 <button id="codex-oauth-refresh-auth" type="button" class="menu_button displayNone">Refresh sign-in</button>
             </div>
             <label>Model<select id="codex-oauth-model" class="text_pole wide100p"></select></label>
@@ -161,7 +162,7 @@ function createPanel() {
                 <button id="codex-oauth-test" type="button" class="menu_button">Test connection</button>
             </div>
             <label class="checkbox_label"><input id="codex-oauth-debug" type="checkbox"><span>Show outgoing prompt structure</span></label>
-            <small>No local agent prompt is added. Prompts and generated images are never written to provider logs.</small>
+            <small>For an admin user, an existing local Codex sign-in is reused automatically and never modified. Disconnecting affects SillyTavern only. No local agent prompt is added; prompts and generated images are never written to provider logs.</small>
             <pre id="codex-oauth-prompt-debug" class="displayNone"></pre>
         </section>`,
     );
@@ -170,7 +171,12 @@ function createPanel() {
 
     $('#codex-oauth-login').on('click', async () => {
         try {
-            await request('/auth/login', {});
+            const result = await request('/auth/login', {});
+            if (result?.reused) {
+                await refreshStatus();
+                toastr.success('Reused the existing local Codex sign-in.', 'Codex');
+                return;
+            }
             toastr.info('The system browser is open. Status will update after ChatGPT sign-in completes.', 'Codex');
             clearInterval(statusPoll);
             let remaining = 150;

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { EncryptedCredentialStore } from '../server/credentials.js';
+import { EncryptedCredentialStore, LayeredCredentialStore, SharedCodexCredentialSource } from '../server/credentials.js';
 import { CodexUpstreamClient } from '../server/upstream/client.js';
 
 test('credential store encrypts token fields and binds ciphertext to the SillyTavern user identity', async (t) => {
@@ -23,6 +23,54 @@ test('credential store encrypts token fields and binds ciphertext to the SillyTa
     await assert.rejects(otherUserStore.read(), error => error.code === 'CREDENTIAL_STORE_UNREADABLE');
     await store.clear();
     assert.equal(await store.read(), null);
+});
+
+test('shared Codex credentials are read without mutation and JWT expiry wins over refresh time', async (t) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-shared-test-'));
+    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    const filePath = path.join(directory, 'auth.json');
+    const payload = Buffer.from(JSON.stringify({ exp: 1_900_000_000 })).toString('base64url');
+    const accessToken = `header.${payload}.signature`;
+    const document = {
+        last_refresh: '2020-01-01T00:00:00.000Z',
+        tokens: { access_token: accessToken, refresh_token: 'shared-refresh', id_token: 'id', account_id: 'acct' },
+    };
+    await fs.writeFile(filePath, JSON.stringify(document), 'utf8');
+    const before = await fs.readFile(filePath, 'utf8');
+
+    const credentials = await new SharedCodexCredentialSource({ filePath, logger: { warn() {} } }).read();
+    assert.equal(credentials.accessToken, accessToken);
+    assert.equal(credentials.refreshToken, 'shared-refresh');
+    assert.equal(credentials.expiresAt, 1_900_000_000_000);
+    assert.equal(credentials.credentialSource, 'codex-cli');
+    assert.equal(await fs.readFile(filePath, 'utf8'), before);
+});
+
+test('layered store copies refreshes into encrypted storage and disconnect only disables shared reuse', async (t) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-layered-test-'));
+    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    const sharedDocument = path.join(directory, 'auth.json');
+    await fs.writeFile(sharedDocument, JSON.stringify({ tokens: { access_token: 'shared-access', refresh_token: 'shared-refresh' } }), 'utf8');
+    const primary = new EncryptedCredentialStore({
+        filePath: path.join(directory, 'credentials.enc'),
+        masterSecret: 'secret',
+        identity: 'owner',
+    });
+    const store = new LayeredCredentialStore({
+        primary,
+        shared: new SharedCodexCredentialSource({ filePath: sharedDocument, logger: { warn() {} } }),
+        disabledFilePath: path.join(directory, 'shared-disabled'),
+    });
+
+    assert.equal((await store.read()).credentialSource, 'codex-cli');
+    await store.write({ accessToken: 'refreshed-access', refreshToken: 'refreshed-token', expiresAt: 123, credentialSource: 'codex-cli' });
+    assert.equal((await store.read()).accessToken, 'refreshed-access');
+    assert.match(await fs.readFile(primary.filePath, 'utf8'), /ciphertext/);
+    assert.doesNotMatch(await fs.readFile(primary.filePath, 'utf8'), /refreshed-access/);
+    await store.clear();
+    assert.equal(await store.read(), null);
+    assert.match(await fs.readFile(sharedDocument, 'utf8'), /shared-access/);
+    assert.equal((await store.enableShared()).accessToken, 'shared-access');
 });
 
 test('refresh uses one per-user flight and retains the previous refresh token when unrotated', async () => {

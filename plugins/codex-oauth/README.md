@@ -10,11 +10,18 @@ can change.
 ## Credential boundary
 
 - OAuth uses Authorization Code with PKCE and a random state value.
+- For an admin SillyTavern user, the server first checks the existing Codex
+  Desktop/CLI credential cache at `$CODEX_HOME/auth.json` or `~/.codex/auth.json`.
+  It reads that file only; it never rewrites or deletes the Codex cache.
 - The browser receives only login status. Access tokens, refresh tokens,
   authorization codes, and account IDs remain server-side.
 - Credentials are encrypted with AES-256-GCM, scoped to the current
   SillyTavern user, and stored in that user's data directory as
   `.codex-oauth.credentials.enc`.
+- Refresh results derived from a shared Codex login are written only to the
+  encrypted SillyTavern store. Disconnecting creates a non-secret per-user
+  marker and never signs out Codex Desktop/CLI. Non-admin SillyTavern users
+  cannot inherit the machine owner's Codex login.
 - Writes use a restrictive file mode where the operating system supports it.
 - Logs contain request IDs, model IDs, timing, and safe error codes only. They
   do not contain prompts, tokens, authorization headers, or generated images.
