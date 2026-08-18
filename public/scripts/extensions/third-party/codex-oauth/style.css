@@ -32,6 +32,8 @@
 .amy-studio-tab.selected { border-color: var(--SmartThemeQuoteColor); color: var(--SmartThemeQuoteColor); }
 .amy-studio section { display: flex; flex-direction: column; gap: 0.65rem; }
 .amy-studio section.displayNone { display: none; }
+.amy-studio .flex-container { flex-wrap: wrap; }
+.amy-studio .flex-container .menu_button { width: auto; min-width: max-content; flex: 0 0 auto; white-space: nowrap; }
 .amy-studio textarea { width: 100%; resize: vertical; }
 .amy-studio .monospace, .amy-studio-audit { font-family: var(--monoFontFamily, monospace); }
 .amy-studio-audit { max-height: 12rem; overflow: auto; white-space: pre-wrap; word-break: break-word; }

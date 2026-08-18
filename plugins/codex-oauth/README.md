@@ -51,6 +51,10 @@ Open **Extensions → Amy Creator Studio**. The bundled studio deliberately uses
 reviewable drafts and existing SillyTavern storage formats instead of a private
 database.
 
+For the end-to-end novel workflow, JSON field semantics, Agent constraints,
+branch isolation, and failure recovery, see
+[`CREATOR_STUDIO_WORKFLOW.md`](./CREATOR_STUDIO_WORKFLOW.md).
+
 The connection panel, Creator Studio controls, confirmations, validation
 messages, and notifications follow SillyTavern's selected interface language.
 English, Simplified Chinese, and Traditional Chinese are bundled using
@@ -62,12 +66,19 @@ manifest mapping, without changing the feature code.
 ### Character and lorebook
 
 1. Describe a character and setting, then choose **Generate draft**.
-2. Review or edit the generated Character Card V2 JSON.
+2. Review or edit the generated Character Card V3 JSON.
 3. Choose **Validate**, then **Import character + lorebook**.
 
-Validation requires the Character Card V2 envelope and core fields. Unknown
-namespaced card `extensions` are preserved. Import creates a new linked World
-Info file and never overwrites a lorebook with the same name.
+Validation accepts Character Card V2 or V3 input and always normalizes the
+reviewed draft to V3.0. V3 group greetings, nickname, multilingual creator
+notes, sources, assets, timestamps, and namespaced `extensions` are preserved.
+The linked lorebook is also embedded as a V3 `character_book`, while import
+continues to use SillyTavern's stable character-create endpoint. Import creates
+a new linked World Info file and never overwrites a lorebook with the same
+name. The World Info link is stored in the standard card extension so the
+create endpoint does not replace the normalized V3 embedded book. V3.1
+proposals are deliberately not targeted until they become an accepted
+specification.
 
 ### Visual assets
 
@@ -94,6 +105,22 @@ message range. A draft cannot be saved from another chat. Exact duplicate
 memories are skipped. **Close scene** uses the same review flow to prepare a
 chronological scene summary, durable state and relationship changes, and open
 story threads without promoting future plot ideas to facts.
+
+Scene close also prepares a compact `amy_story_state_v1` snapshot containing
+the current scene, character state, directional relationships, open threads,
+canon facts, and explicitly non-canon author plans. The previous reviewed
+snapshot is supplied when the next scene is closed so still-valid state is not
+silently lost. Saving remains confirmation-gated: approved state is stored in
+chat metadata and mirrored to one always-on chat lorebook entry so it can guide
+later generations. Author plans remain in reviewed chat metadata and are not
+injected into the roleplay prompt; the model is instructed never to infer them
+from dialogue or narration.
+
+Branch visualization is intentionally left to SillyTavern checkpoints and the
+Timelines extension. **Create checkpoint** confirms and runs SillyTavern's
+native checkpoint command on the latest message; Timelines can then display
+the branch. Creator Studio does not maintain a second automatic plot graph
+whose nodes could drift away from edited or branched chats.
 
 ### Safe tools
 

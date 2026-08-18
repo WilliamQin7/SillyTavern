@@ -1,4 +1,6 @@
 export const STUDIO_SCHEMA = 'amy_creator_studio_v1';
+export const STORY_STATE_SCHEMA = 'amy_story_state_v1';
+export const STORY_STATE_ENTRY_COMMENT = 'Amy Story State v1';
 export const SAFE_TOOL_NAMES = Object.freeze(['AmyStudioRemember', 'AmyStudioGenerateImage']);
 
 const REQUIRED_CARD_FIELDS = Object.freeze([
@@ -26,8 +28,33 @@ function string(value) {
     return typeof value === 'string' ? value.trim() : '';
 }
 
+function boundedString(value, limit = 500) {
+    return string(value).slice(0, limit);
+}
+
 function stringArray(value) {
     return Array.isArray(value) ? value.map(string).filter(Boolean) : [];
+}
+
+function optionalNumber(value) {
+    if (value === null || value === undefined || value === '') return undefined;
+    return Number.isFinite(Number(value)) ? Number(value) : undefined;
+}
+
+function stringRecord(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value)
+        .map(([key, item]) => [string(key), string(item)])
+        .filter(([key, item]) => key && item));
+}
+
+function normalizeAsset(asset) {
+    return {
+        type: string(asset?.type),
+        uri: string(asset?.uri),
+        name: string(asset?.name),
+        ext: string(asset?.ext).replace(/^\./, '').toLowerCase() || 'unknown',
+    };
 }
 
 export function normalizeStudioSettings(value) {
@@ -83,8 +110,15 @@ export function validateStudioDraft(value) {
     const draft = typeof value === 'string' ? extractJsonObject(value) : structuredClone(value);
     const errors = [];
     if (draft?.schema !== STUDIO_SCHEMA) errors.push(`schema must be ${STUDIO_SCHEMA}`);
-    if (draft?.card?.spec !== 'chara_card_v2') errors.push('card.spec must be chara_card_v2');
-    if (draft?.card?.spec_version !== '2.0') errors.push('card.spec_version must be 2.0');
+    const inputSpec = draft?.card?.spec;
+    const inputVersion = draft?.card?.spec_version;
+    if (!['chara_card_v2', 'chara_card_v3'].includes(inputSpec)) {
+        errors.push('card.spec must be chara_card_v2 or chara_card_v3');
+    }
+    if ((inputSpec === 'chara_card_v2' && inputVersion !== '2.0')
+        || (inputSpec === 'chara_card_v3' && inputVersion !== '3.0')) {
+        errors.push('card.spec_version must match card.spec');
+    }
     const data = draft?.card?.data;
     if (!data || typeof data !== 'object') errors.push('card.data is required');
     for (const field of REQUIRED_CARD_FIELDS) {
@@ -96,6 +130,18 @@ export function validateStudioDraft(value) {
         errors.push('card.data.alternate_greetings must be an array');
     }
     if (data?.tags !== undefined && !Array.isArray(data.tags)) errors.push('card.data.tags must be an array');
+    if (inputSpec === 'chara_card_v3' && !Array.isArray(data?.group_only_greetings)) {
+        errors.push('card.data.group_only_greetings must be an array');
+    }
+    if (data?.source !== undefined && !Array.isArray(data.source)) errors.push('card.data.source must be an array');
+    if (data?.assets !== undefined && !Array.isArray(data.assets)) errors.push('card.data.assets must be an array');
+    if (Array.isArray(data?.assets)) {
+        data.assets.forEach((asset, index) => {
+            if (!asset || typeof asset !== 'object' || !string(asset.type) || !string(asset.uri) || !string(asset.name) || !string(asset.ext)) {
+                errors.push(`card.data.assets[${index}] requires type, uri, name, and ext`);
+            }
+        });
+    }
     const entries = Array.isArray(draft?.lorebook?.entries)
         ? draft.lorebook.entries.map(normalizeLoreEntry)
         : [];
@@ -105,24 +151,54 @@ export function validateStudioDraft(value) {
     });
     if (errors.length) return { valid: false, errors, draft: null };
 
+    const normalizedLorebook = {
+        name: string(draft?.lorebook?.name) || `${string(data.name)} Lore`,
+        entries,
+    };
+    const characterBook = {
+        name: normalizedLorebook.name,
+        extensions: {},
+        entries: entries.map((entry, index) => ({
+            keys: entry.keys,
+            content: entry.content,
+            extensions: {},
+            enabled: true,
+            insertion_order: entry.order,
+            use_regex: false,
+            constant: entry.constant,
+            name: entry.comment,
+            id: index,
+            comment: entry.comment,
+            selective: entry.selective,
+            secondary_keys: entry.secondary_keys,
+            position: 'before_char',
+        })),
+    };
     const normalized = {
         schema: STUDIO_SCHEMA,
         card: {
-            spec: 'chara_card_v2',
-            spec_version: '2.0',
+            spec: 'chara_card_v3',
+            spec_version: '3.0',
             data: {
                 ...Object.fromEntries(REQUIRED_CARD_FIELDS.map(field => [field, String(data[field] ?? '')])),
                 alternate_greetings: stringArray(data.alternate_greetings),
+                group_only_greetings: stringArray(data.group_only_greetings),
                 tags: stringArray(data.tags),
                 creator: string(data.creator) || 'Amy Creator Studio',
                 character_version: string(data.character_version) || '1.0',
                 extensions: data.extensions && typeof data.extensions === 'object' ? data.extensions : {},
+                character_book: characterBook,
+                ...(string(data.nickname) ? { nickname: string(data.nickname) } : {}),
+                ...(Object.keys(stringRecord(data.creator_notes_multilingual)).length
+                    ? { creator_notes_multilingual: stringRecord(data.creator_notes_multilingual) }
+                    : {}),
+                ...(stringArray(data.source).length ? { source: stringArray(data.source) } : {}),
+                ...(Array.isArray(data.assets) ? { assets: data.assets.map(normalizeAsset) } : {}),
+                ...(optionalNumber(data.creation_date) !== undefined ? { creation_date: optionalNumber(data.creation_date) } : {}),
+                ...(optionalNumber(data.modification_date) !== undefined ? { modification_date: optionalNumber(data.modification_date) } : {}),
             },
         },
-        lorebook: {
-            name: string(draft?.lorebook?.name) || `${string(data.name)} Lore`,
-            entries,
-        },
+        lorebook: normalizedLorebook,
         visual: {
             anchor: string(draft?.visual?.anchor),
             style: string(draft?.visual?.style),
@@ -132,9 +208,11 @@ export function validateStudioDraft(value) {
 }
 
 export function characterCreatePayload(draft, worldName = '') {
-    const data = validateStudioDraft(draft).draft?.card?.data;
-    if (!data) throw new Error('Character draft is invalid.');
+    const card = validateStudioDraft(draft).draft?.card;
+    const data = card?.data;
+    if (!card || !data) throw new Error('Character draft is invalid.');
     return {
+        json_data: JSON.stringify(card),
         ch_name: data.name,
         description: data.description,
         personality: data.personality,
@@ -150,7 +228,9 @@ export function characterCreatePayload(draft, worldName = '') {
         character_version: data.character_version,
         talkativeness: '0.5',
         fav: 'false',
-        world: worldName,
+        // Link through the standard extension without asking the create endpoint
+        // to replace the already-normalized V3 character_book from json_data.
+        world: '',
         depth_prompt_prompt: '',
         depth_prompt_depth: '4',
         depth_prompt_role: 'system',
@@ -200,7 +280,77 @@ export function normalizeMemoryEnvelope(value, fallbackSource = {}) {
     return {
         source: normalizeMemorySource(draft?.source ?? fallbackSource),
         memories: normalizeMemoryDraft(draft),
+        storyState: normalizeStoryState(draft?.storyState ?? draft?.story_state),
     };
+}
+
+export function normalizeStoryState(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const scene = value.scene && typeof value.scene === 'object' ? value.scene : {};
+    const characters = (Array.isArray(value.characters) ? value.characters : []).map(character => ({
+        name: boundedString(character?.name, 120),
+        status: boundedString(character?.status),
+        goal: boundedString(character?.goal),
+        location: boundedString(character?.location, 200),
+        inventory: stringArray(character?.inventory).map(item => item.slice(0, 200)).slice(0, 50),
+        knowledge: stringArray(character?.knowledge).map(item => item.slice(0, 500)).slice(0, 50),
+    })).filter(character => character.name).slice(0, 50);
+    const relationships = (Array.isArray(value.relationships) ? value.relationships : []).map(relationship => ({
+        from: boundedString(relationship?.from, 120),
+        to: boundedString(relationship?.to, 120),
+        state: boundedString(relationship?.state),
+        lastChange: boundedString(relationship?.lastChange ?? relationship?.last_change),
+    })).filter(relationship => relationship.from && relationship.to).slice(0, 100);
+    const openThreads = (Array.isArray(value.openThreads ?? value.open_threads) ? value.openThreads ?? value.open_threads : []).map(thread => ({
+        title: boundedString(thread?.title, 200),
+        detail: boundedString(thread?.detail, 1000),
+        status: ['open', 'resolved'].includes(thread?.status) ? thread.status : 'open',
+        keys: stringArray(thread?.keys).map(item => item.slice(0, 120)).slice(0, 20),
+    })).filter(thread => thread.title).slice(0, 100);
+    const canon = (Array.isArray(value.canon) ? value.canon : []).map(fact => ({
+        content: boundedString(fact?.content, 1000),
+        keys: stringArray(fact?.keys).map(item => item.slice(0, 120)).slice(0, 20),
+    })).filter(fact => fact.content).slice(0, 100);
+    const authorPlans = (Array.isArray(value.authorPlans ?? value.author_plans) ? value.authorPlans ?? value.author_plans : []).map(plan => ({
+        content: boundedString(plan?.content, 1000),
+        status: ['planned', 'discarded'].includes(plan?.status) ? plan.status : 'planned',
+    })).filter(plan => plan.content).slice(0, 50);
+    return {
+        schema: STORY_STATE_SCHEMA,
+        scene: {
+            summary: boundedString(scene.summary, 2000),
+            time: boundedString(scene.time, 200),
+            location: boundedString(scene.location, 200),
+            presentCharacters: stringArray(scene.presentCharacters ?? scene.present_characters)
+                .map(item => item.slice(0, 120)).slice(0, 50),
+        },
+        characters,
+        relationships,
+        openThreads,
+        canon,
+        authorPlans,
+    };
+}
+
+export function storyStateToLoreContent(value) {
+    const state = normalizeStoryState(value);
+    if (!state) return '';
+    const sections = [
+        state.scene.summary && `Latest scene: ${state.scene.summary}`,
+        [state.scene.time && `Time: ${state.scene.time}`, state.scene.location && `Location: ${state.scene.location}`].filter(Boolean).join(' · '),
+        state.scene.presentCharacters.length && `Present: ${state.scene.presentCharacters.join(', ')}`,
+        ...state.characters.map(character => `${character.name}: ${[
+            character.status,
+            character.goal && `Goal: ${character.goal}`,
+            character.location && `Location: ${character.location}`,
+            character.inventory.length && `Inventory: ${character.inventory.join(', ')}`,
+            character.knowledge.length && `Knows: ${character.knowledge.join('; ')}`,
+        ].filter(Boolean).join(' · ')}`),
+        ...state.relationships.map(relationship => `${relationship.from} → ${relationship.to}: ${[relationship.state, relationship.lastChange].filter(Boolean).join(' · ')}`),
+        ...state.openThreads.filter(thread => thread.status === 'open').map(thread => `Open thread — ${thread.title}: ${thread.detail}`),
+        ...state.canon.map(fact => `Canon: ${fact.content}`),
+    ];
+    return sections.filter(Boolean).join('\n');
 }
 
 export function memorySourceMatchesChat(source, chatId) {
@@ -247,13 +397,14 @@ export function appendAudit(settings, entry) {
 }
 
 export function creatorPrompt(idea) {
-    return `Create one original SillyTavern character and a compact linked lorebook from this request:\n${String(idea)}\n\nReturn JSON only. Use this exact top-level shape:\n{"schema":"${STUDIO_SCHEMA}","card":{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"","description":"","personality":"","scenario":"","first_mes":"","mes_example":"","creator_notes":"","system_prompt":"","post_history_instructions":"","alternate_greetings":[],"tags":[],"creator":"Amy Creator Studio","character_version":"1.0","extensions":{}}},"lorebook":{"name":"","entries":[{"keys":[],"content":"","comment":"","constant":false,"selective":false,"secondary_keys":[],"order":100}]},"visual":{"anchor":"stable physical identity, clothing and palette","style":"consistent art direction"}}\nMake every lore entry standalone and concise. Use {{char}} and {{user}} macros where appropriate. Do not include markdown fences.`;
+    return `Create one original SillyTavern character and a compact linked lorebook from this request:\n${String(idea)}\n\nReturn JSON only. Use this exact top-level shape:\n{"schema":"${STUDIO_SCHEMA}","card":{"spec":"chara_card_v3","spec_version":"3.0","data":{"name":"","description":"","personality":"","scenario":"","first_mes":"","mes_example":"","creator_notes":"","system_prompt":"","post_history_instructions":"","alternate_greetings":[],"group_only_greetings":[],"tags":[],"creator":"Amy Creator Studio","character_version":"1.0","extensions":{}}},"lorebook":{"name":"","entries":[{"keys":[],"content":"","comment":"","constant":false,"selective":false,"secondary_keys":[],"order":100}]},"visual":{"anchor":"stable physical identity, clothing and palette","style":"consistent art direction"}}\nMake every lore entry standalone and concise. Use {{char}} and {{user}} macros where appropriate. Do not include markdown fences.`;
 }
 
 export function memoryPrompt(messages) {
     return `Extract durable roleplay memories from the transcript below. Keep atomic facts separate from events and changing state. Do not invent information. Return JSON only as {"memories":[{"title":"","content":"standalone third-person memory","keys":["trigger"],"kind":"fact|event|relationship|goal|state","importance":1}]} with at most 8 items. Omit trivial dialogue and transient wording.\n\nTRANSCRIPT\n${String(messages)}`;
 }
 
-export function sceneMemoryPrompt(messages) {
-    return `Close the completed story scene in the transcript below. Return JSON only as {"memories":[{"title":"","content":"standalone third-person memory","keys":["trigger"],"kind":"fact|event|relationship|goal|state","importance":1}]}. The first item must be a concise chronological scene summary with kind=event and importance=5. Add only durable changes to character state, directional relationships, knowledge, promises, goals, inventory, location, and unresolved story threads. Keep every additional item atomic and standalone. Record only events that occurred in the transcript; never turn speculation or future plot plans into facts. Use at most 12 items and omit unchanged details.\n\nTRANSCRIPT\n${String(messages)}`;
+export function sceneMemoryPrompt(messages, currentStoryState = null) {
+    const current = normalizeStoryState(currentStoryState);
+    return `Close the completed story scene in the transcript below. Return JSON only as {"memories":[{"title":"","content":"standalone third-person memory","keys":["trigger"],"kind":"fact|event|relationship|goal|state","importance":1}],"storyState":{"schema":"${STORY_STATE_SCHEMA}","scene":{"summary":"","time":"","location":"","presentCharacters":[]},"characters":[{"name":"","status":"","goal":"","location":"","inventory":[],"knowledge":[]}],"relationships":[{"from":"","to":"","state":"","lastChange":""}],"openThreads":[{"title":"","detail":"","status":"open|resolved","keys":[]}],"canon":[{"content":"","keys":[]}],"authorPlans":[]}}. The first memory must be a concise chronological scene summary with kind=event and importance=5. Add only durable changes to character state, directional relationships, knowledge, promises, goals, inventory, location, and unresolved story threads. Keep every additional memory atomic and standalone. storyState must be the complete current snapshot: retain still-valid items from the previous reviewed state, apply only changes supported by the transcript, and keep it compact. Record only events that occurred in the transcript; never turn speculation or future plot plans into facts. Never create authorPlans from dialogue or narration; preserve existing authorPlans exactly unless the user edited them in the reviewed draft. Use at most 12 memories and omit unchanged details.\n\nPREVIOUS REVIEWED STORY STATE\n${current ? JSON.stringify(current) : 'None'}\n\nTRANSCRIPT\n${String(messages)}`;
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { TavernCardValidator } from '../../../src/validator/TavernCardValidator.js';
 import {
     buildAssetPrompt,
     characterCreatePayload,
@@ -9,8 +10,10 @@ import {
     memorySourceMatchesChat,
     normalizeMemoryEnvelope,
     normalizeMemoryDraft,
+    normalizeStoryState,
     partitionNewMemories,
     sceneMemoryPrompt,
+    storyStateToLoreContent,
     validateStudioDraft,
 } from '../../../public/scripts/extensions/third-party/codex-oauth/studio-core.js';
 
@@ -18,12 +21,14 @@ function draft() {
     return {
         schema: 'amy_creator_studio_v1',
         card: {
-            spec: 'chara_card_v2', spec_version: '2.0',
+            spec: 'chara_card_v3', spec_version: '3.0',
             data: {
                 name: 'Mira', description: 'A cartographer.', personality: 'Curious.', scenario: 'At sea.',
                 first_mes: 'Hello.', mes_example: '{{char}}: North.', creator_notes: '', system_prompt: '',
-                post_history_instructions: '', alternate_greetings: [], tags: ['adventure'], creator: '',
-                character_version: '', extensions: { preserved: true },
+                post_history_instructions: '', alternate_greetings: [], group_only_greetings: ['Ready, crew?'],
+                tags: ['adventure'], creator: '', character_version: '', extensions: { preserved: true },
+                nickname: 'Captain Mira', source: ['https://example.com/mira'],
+                assets: [{ type: 'icon', uri: 'ccdefault:', name: 'main', ext: 'png' }],
             },
         },
         lorebook: { name: 'Mira Lore', entries: [{ keys: ['atlas'], content: 'The atlas records shifting islands.' }] },
@@ -31,14 +36,37 @@ function draft() {
     };
 }
 
-test('Character Card V2 draft validation normalizes fields without destroying extensions', () => {
+test('Character Card V3 validation preserves V3 fields and embeds a portable lorebook', () => {
     const result = validateStudioDraft(draft());
     assert.equal(result.valid, true);
+    assert.equal(result.draft.card.spec, 'chara_card_v3');
+    assert.equal(result.draft.card.spec_version, '3.0');
     assert.deepEqual(result.draft.card.data.extensions, { preserved: true });
+    assert.deepEqual(result.draft.card.data.group_only_greetings, ['Ready, crew?']);
+    assert.equal(result.draft.card.data.nickname, 'Captain Mira');
+    assert.equal(result.draft.card.data.character_book.entries[0].content, 'The atlas records shifting islands.');
+    assert.equal(new TavernCardValidator(result.draft.card).validate(), 3);
     assert.equal(result.draft.lorebook.entries[0].comment, 'Lore 1');
     const payload = characterCreatePayload(result.draft, 'Mira Lore');
     assert.equal(payload.ch_name, 'Mira');
+    assert.equal(payload.world, '');
     assert.deepEqual(JSON.parse(payload.extensions), { preserved: true, world: 'Mira Lore' });
+    assert.equal(JSON.parse(payload.json_data).spec, 'chara_card_v3');
+});
+
+test('Character Card V2 drafts migrate deterministically to V3', () => {
+    const value = draft();
+    value.card.spec = 'chara_card_v2';
+    value.card.spec_version = '2.0';
+    delete value.card.data.group_only_greetings;
+    delete value.card.data.nickname;
+    delete value.card.data.source;
+    delete value.card.data.assets;
+    const result = validateStudioDraft(value);
+    assert.equal(result.valid, true);
+    assert.equal(result.draft.card.spec, 'chara_card_v3');
+    assert.equal(result.draft.card.spec_version, '3.0');
+    assert.deepEqual(result.draft.card.data.group_only_greetings, []);
 });
 
 test('invalid cards and lore entries are rejected before any import', () => {
@@ -71,6 +99,14 @@ test('asset prompts preserve the visual identity and memory drafts stay atomic',
     ]);
 });
 
+test('V3 assets require every standard descriptor field', () => {
+    const value = draft();
+    delete value.card.data.assets[0].ext;
+    const result = validateStudioDraft(value);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some(error => error.includes('requires type, uri, name, and ext')));
+});
+
 test('memory drafts retain their source chat and reject cross-chat saves', () => {
     const draft = normalizeMemoryEnvelope({
         source: { chatId: 'chapter-1', startMessageId: 4, endMessageId: 9, messageCount: 6 },
@@ -97,8 +133,34 @@ test('memory deduplication covers stored entries and duplicates in one review ba
 });
 
 test('scene close prompt separates occurred events from future plans', () => {
-    const prompt = sceneMemoryPrompt('Mira: We made it home.');
-    assert.match(prompt, /first item must be a concise chronological scene summary/i);
+    const previous = normalizeStoryState({
+        scene: { location: 'Sea' },
+        authorPlans: [{ content: 'Reveal the false map later.', status: 'planned' }],
+    });
+    const prompt = sceneMemoryPrompt('Mira: We made it home.', previous);
+    assert.match(prompt, /first memory must be a concise chronological scene summary/i);
     assert.match(prompt, /never turn speculation or future plot plans into facts/i);
     assert.match(prompt, /unresolved story threads/i);
+    assert.match(prompt, /preserve existing authorPlans exactly/i);
+    assert.match(prompt, /Reveal the false map later/);
+});
+
+test('story state normalization separates canon, plans, and directional relationships', () => {
+    const state = normalizeStoryState({
+        scene: { summary: 'Mira returned.', present_characters: ['Mira', 'Ivo'] },
+        characters: [{ name: 'Mira', status: 'tired', inventory: ['atlas'] }],
+        relationships: [{ from: 'Mira', to: 'Ivo', state: 'cautious trust', last_change: 'Ivo kept his promise.' }],
+        open_threads: [{ title: 'False map', detail: 'Its maker is unknown.' }],
+        canon: [{ content: 'Mira returned to port.', keys: ['Mira', 'port'] }],
+        author_plans: [{ content: 'Reveal the maker in chapter five.' }],
+    });
+    assert.equal(state.schema, 'amy_story_state_v1');
+    assert.deepEqual(state.scene.presentCharacters, ['Mira', 'Ivo']);
+    assert.equal(state.relationships[0].lastChange, 'Ivo kept his promise.');
+    assert.equal(state.authorPlans[0].status, 'planned');
+    const lore = storyStateToLoreContent(state);
+    assert.match(lore, /Mira → Ivo: cautious trust/);
+    assert.match(lore, /Canon: Mira returned to port\./);
+    assert.doesNotMatch(lore, /Reveal the maker/);
+    assert.equal(state.authorPlans[0].content, 'Reveal the maker in chapter five.');
 });

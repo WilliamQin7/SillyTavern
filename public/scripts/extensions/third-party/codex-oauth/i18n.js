@@ -15,13 +15,18 @@ export function tr(key, values = {}) {
 export function translateStudioValidationErrors(errors) {
     return errors.map(error => {
         if (error.startsWith('schema must be ')) return tr('studio.validation.schema', { schema: error.slice('schema must be '.length) });
-        if (error === 'card.spec must be chara_card_v2') return tr('studio.validation.spec');
-        if (error === 'card.spec_version must be 2.0') return tr('studio.validation.version');
+        if (error === 'card.spec must be chara_card_v2 or chara_card_v3') return tr('studio.validation.spec');
+        if (error === 'card.spec_version must match card.spec') return tr('studio.validation.version');
         if (error === 'card.data is required') return tr('studio.validation.data');
         if (error === 'card.data.name is required') return tr('studio.validation.name');
         if (error === 'card.data.first_mes is required') return tr('studio.validation.firstMessage');
         if (error === 'card.data.alternate_greetings must be an array') return tr('studio.validation.alternateGreetings');
         if (error === 'card.data.tags must be an array') return tr('studio.validation.tags');
+        if (error === 'card.data.group_only_greetings must be an array') return tr('studio.validation.groupGreetings');
+        if (error === 'card.data.source must be an array') return tr('studio.validation.source');
+        if (error === 'card.data.assets must be an array') return tr('studio.validation.assets');
+        const asset = error.match(/^card\.data\.assets\[(\d+)] requires type, uri, name, and ext$/);
+        if (asset) return tr('studio.validation.assetFields', { index: Number(asset[1]) + 1 });
         const field = error.match(/^(card\.data\.[A-Za-z0-9_]+) must be a string$/);
         if (field) return tr('studio.validation.fieldString', { field: field[1] });
         const content = error.match(/^lorebook\.entries\[(\d+)]\.content is required$/);

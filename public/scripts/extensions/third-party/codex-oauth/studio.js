@@ -15,9 +15,12 @@ import {
     memoryPrompt,
     normalizeMemoryEnvelope,
     normalizeMemoryDraft,
+    normalizeStoryState,
     normalizeStudioSettings,
     partitionNewMemories,
     sceneMemoryPrompt,
+    STORY_STATE_ENTRY_COMMENT,
+    storyStateToLoreContent,
     validateStudioDraft,
 } from './studio-core.js';
 
@@ -42,6 +45,7 @@ function chatState() {
         ...state,
         pendingMemories: typeof state.pendingMemories === 'string' ? state.pendingMemories : '',
         lastMemoryMessageCount: Math.max(0, Number(state.lastMemoryMessageCount) || 0),
+        storyState: normalizeStoryState(state.storyState),
     };
     return chat_metadata[CHAT_STATE_KEY];
 }
@@ -289,18 +293,25 @@ function transcriptWindow(windowSize) {
     };
 }
 
-async function prepareMemoryDraft(prompt, toastKey) {
+async function prepareMemoryDraft(prompt, toastKey, { requireStoryState = false } = {}) {
     const { text, source } = transcriptWindow(settings().memoryWindow);
     if (!source.chatId || !text) throw new Error(tr('studio.error.openChatMemory'));
-    const raw = await codexText(prompt(text));
-    const memories = normalizeMemoryDraft(raw);
-    if (!memories.length) throw new Error(tr('studio.error.noMemories'));
     const state = chatState();
-    state.pendingMemories = JSON.stringify({ source, memories }, null, 2);
+    const raw = await codexText(prompt(text, state.storyState));
+    assertMemorySource(source);
+    const draft = normalizeMemoryEnvelope(raw, source);
+    if (!draft.memories.length && !draft.storyState) throw new Error(tr('studio.error.noMemories'));
+    if (requireStoryState && !storyStateToLoreContent(draft.storyState)) throw new Error(tr('studio.error.noStoryState'));
+    state.pendingMemories = JSON.stringify({
+        source,
+        memories: draft.memories,
+        ...(draft.storyState ? { storyState: draft.storyState } : {}),
+    }, null, 2);
     state.lastMemoryMessageCount = getContext().chat.filter(message => !message.is_system).length;
+    assertMemorySource(source);
     await persistChat({ immediate: true });
     renderSettings();
-    toastr.success(tr(toastKey, { count: memories.length }), tr('studio.error.actionTitle'));
+    toastr.success(tr(toastKey, { count: draft.memories.length }), tr('studio.error.actionTitle'));
 }
 
 async function extractMemories() {
@@ -308,7 +319,23 @@ async function extractMemories() {
 }
 
 async function closeScene() {
-    await prepareMemoryDraft(sceneMemoryPrompt, 'studio.toast.scenePrepared');
+    await prepareMemoryDraft(sceneMemoryPrompt, 'studio.toast.scenePrepared', { requireStoryState: true });
+}
+
+async function createCheckpoint() {
+    if (!getCurrentChatId() || !getContext().chat.length) throw new Error(tr('studio.error.openChatCheckpoint'));
+    const confirmed = await Popup.show.confirm(
+        tr('studio.popup.checkpointTitle'),
+        tr('studio.popup.checkpointBody'),
+    );
+    if (!confirmed) return;
+    const checkpoint = await runSlash('/checkpoint-create');
+    if (!checkpoint) throw new Error(tr('studio.error.checkpointCreate'));
+    const state = settings();
+    appendAudit(state, { tool: 'checkpoint_create', status: 'approved', summary: checkpoint });
+    persist();
+    renderAudit();
+    toastr.success(tr('studio.toast.checkpointCreated', { name: checkpoint }), tr('studio.error.actionTitle'));
 }
 
 async function maybePrepareAutomaticMemory() {
@@ -329,14 +356,16 @@ function assertMemorySource(source) {
     }
 }
 
-async function saveMemoryEntries(memories, { confirm = true, source = null, auditSource = 'memory_review' } = {}) {
-    if (!memories.length) throw new Error(tr('studio.error.noValidMemories'));
+async function saveMemoryEntries(memories, { confirm = true, source = null, storyState = null, auditSource = 'memory_review' } = {}) {
+    const reviewedStoryState = normalizeStoryState(storyState);
+    const storyContent = storyStateToLoreContent(reviewedStoryState);
+    if (!memories.length && !storyContent) throw new Error(tr('studio.error.noValidMemories'));
     assertMemorySource(source);
     const state = settings();
     if (confirm) {
         const confirmed = await Popup.show.confirm(
             tr('studio.popup.saveMemoryTitle'),
-            tr('studio.popup.saveMemoryBody', { count: memories.length }),
+            tr(storyContent ? 'studio.popup.saveSceneBody' : 'studio.popup.saveMemoryBody', { count: memories.length }),
         );
         if (!confirmed) {
             appendAudit(state, { tool: auditSource, status: 'cancelled', summary: `${memories.length} memories` });
@@ -369,18 +398,37 @@ async function saveMemoryEntries(memories, { confirm = true, source = null, audi
             disable: false,
         });
     }
-    if (fresh.length) await saveWorldInfo(bookName, data, true);
+    if (storyContent) {
+        let entry = Object.values(data.entries).find(item => item?.comment === STORY_STATE_ENTRY_COMMENT);
+        entry ??= createWorldInfoEntry(bookName, data);
+        if (!entry) throw new Error(tr('studio.error.memoryEntry'));
+        Object.assign(entry, {
+            key: [],
+            content: storyContent,
+            comment: STORY_STATE_ENTRY_COMMENT,
+            constant: true,
+            vectorized: false,
+            order: 900,
+            position: 0,
+            disable: false,
+        });
+    }
+    if (fresh.length || storyContent) await saveWorldInfo(bookName, data, true);
     assertMemorySource(source);
-    chatState().pendingMemories = '';
+    const chat = chatState();
+    chat.pendingMemories = '';
+    if (storyContent) chat.storyState = reviewedStoryState;
     appendAudit(state, {
         tool: auditSource,
-        status: fresh.length ? 'approved' : 'skipped',
-        summary: `${fresh.length} saved, ${duplicates.length} duplicate → ${bookName}`,
+        status: fresh.length || storyContent ? 'approved' : 'skipped',
+        summary: `${fresh.length} saved, ${duplicates.length} duplicate, story state ${storyContent ? 'updated' : 'unchanged'} → ${bookName}`,
     });
     persist();
     await persistChat({ immediate: true });
     renderSettings();
-    if (!fresh.length) {
+    if (storyContent && !fresh.length) {
+        toastr.success(tr('studio.toast.storyStateSaved', { book: bookName, duplicates: duplicates.length }), tr('studio.error.actionTitle'));
+    } else if (!fresh.length) {
         toastr.info(tr('studio.toast.noNewMemories', { count: duplicates.length }), tr('studio.error.actionTitle'));
     } else if (duplicates.length) {
         toastr.success(tr('studio.toast.memoriesSavedWithDuplicates', { count: fresh.length, duplicates: duplicates.length, book: bookName }), tr('studio.error.actionTitle'));
@@ -393,7 +441,7 @@ async function saveMemoryEntries(memories, { confirm = true, source = null, audi
 async function savePendingMemories() {
     const draft = normalizeMemoryEnvelope($('#amy-studio-memory-draft').val());
     if (!draft.source.chatId) throw new Error(tr('studio.error.memoryMissingSource'));
-    await saveMemoryEntries(draft.memories, { source: draft.source });
+    await saveMemoryEntries(draft.memories, { source: draft.source, storyState: draft.storyState });
 }
 
 function registerSafeTools() {
@@ -458,6 +506,9 @@ function renderSettings() {
     $('#amy-studio-auto-memory').prop('checked', state.autoMemoryDraft);
     $('#amy-studio-auto-memory-every').val(state.autoMemoryEvery);
     $('#amy-studio-memory-draft').val(memoryState.pendingMemories);
+    $('#amy-studio-story-state').text(memoryState.storyState
+        ? JSON.stringify(memoryState.storyState, null, 2)
+        : tr('studio.memory.noStoryState'));
     let source = null;
     try {
         source = memoryState.pendingMemories ? normalizeMemoryEnvelope(memoryState.pendingMemories).source : null;
@@ -509,7 +560,7 @@ function createPanel() {
                 <section data-amy-tab="character">
                     <label><span data-i18n="amyCreatorStudio.studio.character.idea">Character idea</span><textarea id="amy-studio-idea" class="text_pole" rows="4" placeholder="Describe the character, relationship, setting, tone, and boundaries." data-i18n="[placeholder]amyCreatorStudio.studio.character.ideaPlaceholder"></textarea></label>
                     <div class="flex-container"><button id="amy-studio-generate" class="menu_button" data-i18n="amyCreatorStudio.studio.character.generate">Generate draft</button><button id="amy-studio-validate" class="menu_button" data-i18n="amyCreatorStudio.studio.character.validate">Validate</button><button id="amy-studio-import" class="menu_button" data-i18n="amyCreatorStudio.studio.character.import">Import character + lorebook</button></div>
-                    <label><span data-i18n="amyCreatorStudio.studio.character.draft">Reviewable Character Card V2 draft</span><textarea id="amy-studio-draft" class="text_pole monospace" rows="14"></textarea></label>
+                    <label><span data-i18n="amyCreatorStudio.studio.character.draft">Reviewable Character Card V3 draft</span><textarea id="amy-studio-draft" class="text_pole monospace" rows="14"></textarea></label>
                 </section>
                 <section data-amy-tab="assets" class="displayNone">
                     <label><span data-i18n="amyCreatorStudio.studio.assets.anchor">Visual identity anchor</span><textarea id="amy-studio-visual-anchor" class="text_pole" rows="4" placeholder="Stable face, hair, body, clothing, colors, signature details." data-i18n="[placeholder]amyCreatorStudio.studio.assets.anchorPlaceholder"></textarea></label>
@@ -524,10 +575,11 @@ function createPanel() {
                     <label><span data-i18n="amyCreatorStudio.studio.memory.window">Recent messages to inspect</span><input id="amy-studio-memory-window" class="text_pole" type="number" min="4" max="100"></label>
                     <label class="checkbox_label"><input id="amy-studio-auto-memory" type="checkbox"><span data-i18n="amyCreatorStudio.studio.memory.auto">Automatically prepare a review draft</span></label>
                     <label><span data-i18n="amyCreatorStudio.studio.memory.every">Prepare after this many new messages</span><input id="amy-studio-auto-memory-every" class="text_pole" type="number" min="4" max="100"></label>
-                    <div class="flex-container"><button id="amy-studio-memory-extract" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.extract">Extract memory draft</button><button id="amy-studio-scene-close" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.sceneClose">Prepare scene close</button><button id="amy-studio-memory-save" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.save">Save reviewed memories</button></div>
-                    <label><span data-i18n="amyCreatorStudio.studio.memory.draft">Reviewable memory draft</span><textarea id="amy-studio-memory-draft" class="text_pole monospace" rows="12"></textarea></label>
+                    <div class="flex-container"><button id="amy-studio-memory-extract" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.extract">Extract memory draft</button><button id="amy-studio-scene-close" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.sceneClose">Prepare scene close</button><button id="amy-studio-memory-save" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.save">Save reviewed draft</button><button id="amy-studio-checkpoint" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.checkpoint">Create checkpoint</button></div>
+                    <label><span data-i18n="amyCreatorStudio.studio.memory.draft">Reviewable memory and story-state draft</span><textarea id="amy-studio-memory-draft" class="text_pole monospace" rows="12"></textarea></label>
                     <small id="amy-studio-memory-source"></small>
-                    <small data-i18n="amyCreatorStudio.studio.memory.note">Memories are atomic, stored in the current chat lorebook, and marked for vector retrieval. Nothing is written until Save is confirmed.</small>
+                    <small data-i18n="amyCreatorStudio.studio.memory.note">Memories are atomic and vectorized. A reviewed story state is kept as one compact, always-on chat lorebook entry. Nothing is written until Save is confirmed.</small>
+                    <details><summary data-i18n="amyCreatorStudio.studio.memory.currentState">Current reviewed story state</summary><pre id="amy-studio-story-state" class="amy-studio-audit"></pre></details>
                 </section>
                 <section data-amy-tab="tools" class="displayNone">
                     <label class="checkbox_label"><input id="amy-studio-safe-tools" type="checkbox"><span data-i18n="amyCreatorStudio.studio.tools.enable">Allow Codex to propose Amy Studio tools</span></label>
@@ -607,6 +659,7 @@ function createPanel() {
     bindAction('#amy-studio-memory-extract', extractMemories);
     bindAction('#amy-studio-scene-close', closeScene);
     bindAction('#amy-studio-memory-save', savePendingMemories);
+    bindAction('#amy-studio-checkpoint', createCheckpoint);
     renderSettings();
 }
 
