@@ -17,8 +17,6 @@ const DEFAULT_STUDIO_SETTINGS = Object.freeze({
     memoryWindow: 24,
     autoMemoryDraft: false,
     autoMemoryEvery: 12,
-    lastMemoryMessageCount: 0,
-    pendingMemories: '',
     enableSafeTools: false,
     safeToolNames: [...SAFE_TOOL_NAMES],
     audit: [],
@@ -48,8 +46,6 @@ export function normalizeStudioSettings(value) {
         memoryWindow: Math.min(100, Math.max(4, Number(input.memoryWindow) || DEFAULT_STUDIO_SETTINGS.memoryWindow)),
         autoMemoryDraft: input.autoMemoryDraft === true,
         autoMemoryEvery: Math.min(100, Math.max(4, Number(input.autoMemoryEvery) || DEFAULT_STUDIO_SETTINGS.autoMemoryEvery)),
-        lastMemoryMessageCount: Math.max(0, Number(input.lastMemoryMessageCount) || 0),
-        pendingMemories: typeof input.pendingMemories === 'string' ? input.pendingMemories : '',
         enableSafeTools: input.enableSafeTools === true,
         safeToolNames: Array.isArray(input.safeToolNames)
             ? input.safeToolNames.filter(name => SAFE_TOOL_NAMES.includes(name))
@@ -186,6 +182,57 @@ export function normalizeMemoryDraft(value) {
     })).filter(memory => memory.content && memory.keys.length);
 }
 
+export function normalizeMemorySource(value) {
+    const source = value && typeof value === 'object' ? value : {};
+    const number = input => input === null || input === undefined || input === ''
+        ? null
+        : (Number.isInteger(Number(input)) ? Number(input) : null);
+    return {
+        chatId: string(source.chatId),
+        startMessageId: number(source.startMessageId),
+        endMessageId: number(source.endMessageId),
+        messageCount: Math.max(0, number(source.messageCount) ?? 0),
+    };
+}
+
+export function normalizeMemoryEnvelope(value, fallbackSource = {}) {
+    const draft = typeof value === 'string' ? extractJsonObject(value) : value;
+    return {
+        source: normalizeMemorySource(draft?.source ?? fallbackSource),
+        memories: normalizeMemoryDraft(draft),
+    };
+}
+
+export function memorySourceMatchesChat(source, chatId) {
+    const expected = normalizeMemorySource(source).chatId;
+    return Boolean(expected && expected === string(chatId));
+}
+
+function memoryContentKey(value) {
+    const content = typeof value === 'string' ? value : value?.content;
+    return String(content ?? '')
+        .replace(/^\[(?:fact|event|relationship|goal|state); importance [1-5]\/5\]\s*/i, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+}
+
+export function partitionNewMemories(memories, entries = []) {
+    const seen = new Set((Array.isArray(entries) ? entries : []).map(memoryContentKey).filter(Boolean));
+    const fresh = [];
+    const duplicates = [];
+    for (const memory of memories) {
+        const key = memoryContentKey(memory);
+        if (!key || seen.has(key)) {
+            duplicates.push(memory);
+            continue;
+        }
+        seen.add(key);
+        fresh.push(memory);
+    }
+    return { fresh, duplicates };
+}
+
 export function filterSafeTools(tools, enabled, allowlist = SAFE_TOOL_NAMES) {
     if (!enabled || !Array.isArray(tools)) return [];
     const allowed = new Set(allowlist.filter(name => SAFE_TOOL_NAMES.includes(name)));
@@ -205,4 +252,8 @@ export function creatorPrompt(idea) {
 
 export function memoryPrompt(messages) {
     return `Extract durable roleplay memories from the transcript below. Keep atomic facts separate from events and changing state. Do not invent information. Return JSON only as {"memories":[{"title":"","content":"standalone third-person memory","keys":["trigger"],"kind":"fact|event|relationship|goal|state","importance":1}]} with at most 8 items. Omit trivial dialogue and transient wording.\n\nTRANSCRIPT\n${String(messages)}`;
+}
+
+export function sceneMemoryPrompt(messages) {
+    return `Close the completed story scene in the transcript below. Return JSON only as {"memories":[{"title":"","content":"standalone third-person memory","keys":["trigger"],"kind":"fact|event|relationship|goal|state","importance":1}]}. The first item must be a concise chronological scene summary with kind=event and importance=5. Add only durable changes to character state, directional relationships, knowledge, promises, goals, inventory, location, and unresolved story threads. Keep every additional item atomic and standalone. Record only events that occurred in the transcript; never turn speculation or future plot plans into facts. Use at most 12 items and omit unchanged details.\n\nTRANSCRIPT\n${String(messages)}`;
 }

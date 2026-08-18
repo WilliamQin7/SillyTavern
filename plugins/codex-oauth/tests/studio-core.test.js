@@ -6,7 +6,11 @@ import {
     characterCreatePayload,
     extractJsonObject,
     filterSafeTools,
+    memorySourceMatchesChat,
+    normalizeMemoryEnvelope,
     normalizeMemoryDraft,
+    partitionNewMemories,
+    sceneMemoryPrompt,
     validateStudioDraft,
 } from '../../../public/scripts/extensions/third-party/codex-oauth/studio-core.js';
 
@@ -65,4 +69,36 @@ test('asset prompts preserve the visual identity and memory drafts stay atomic',
     assert.deepEqual(normalizeMemoryDraft({ memories: [{ title: 'Map', content: 'Mira found a map.', keys: ['map'], kind: 'event', importance: 9 }] }), [
         { title: 'Map', content: 'Mira found a map.', keys: ['map'], kind: 'event', importance: 5 },
     ]);
+});
+
+test('memory drafts retain their source chat and reject cross-chat saves', () => {
+    const draft = normalizeMemoryEnvelope({
+        source: { chatId: 'chapter-1', startMessageId: 4, endMessageId: 9, messageCount: 6 },
+        memories: [{ title: 'Map', content: 'Mira found a map.', keys: ['map'] }],
+    });
+    assert.deepEqual(draft.source, { chatId: 'chapter-1', startMessageId: 4, endMessageId: 9, messageCount: 6 });
+    assert.equal(memorySourceMatchesChat(draft.source, 'chapter-1'), true);
+    assert.equal(memorySourceMatchesChat(draft.source, 'chapter-2'), false);
+    assert.deepEqual(normalizeMemoryEnvelope({ source: { chatId: 'chapter-1' }, memories: [] }).source, {
+        chatId: 'chapter-1', startMessageId: null, endMessageId: null, messageCount: 0,
+    });
+});
+
+test('memory deduplication covers stored entries and duplicates in one review batch', () => {
+    const memories = normalizeMemoryDraft({ memories: [
+        { title: 'Map', content: 'Mira found a map.', keys: ['map'] },
+        { title: 'Map again', content: '  Mira found a map.  ', keys: ['atlas'] },
+        { title: 'Promise', content: 'Mira promised to return.', keys: ['promise'] },
+    ] });
+    const result = partitionNewMemories(memories, [{ content: '[event; importance 3/5] Mira found a map.' }]);
+    assert.deepEqual(result.fresh.map(memory => memory.title), ['Promise']);
+    assert.deepEqual(result.duplicates.map(memory => memory.title), ['Map', 'Map again']);
+    assert.equal(partitionNewMemories([{ content: '[Year 12] Mira returned.' }], [{ content: 'Mira returned.' }]).fresh.length, 1);
+});
+
+test('scene close prompt separates occurred events from future plans', () => {
+    const prompt = sceneMemoryPrompt('Mira: We made it home.');
+    assert.match(prompt, /first item must be a concise chronological scene summary/i);
+    assert.match(prompt, /never turn speculation or future plot plans into facts/i);
+    assert.match(prompt, /unresolved story threads/i);
 });

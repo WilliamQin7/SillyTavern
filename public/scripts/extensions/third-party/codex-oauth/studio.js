@@ -1,4 +1,4 @@
-import { characters, eventSource, event_types, getCharacters, getRequestHeaders, saveSettingsDebounced, this_chid } from '../../../../script.js';
+import { characters, chat_metadata, eventSource, event_types, getCharacters, getCurrentChatId, getRequestHeaders, saveMetadata, saveSettingsDebounced, this_chid } from '../../../../script.js';
 import { extension_settings } from '../../../extensions.js';
 import { oai_settings } from '../../../openai.js';
 import { Popup } from '../../../popup.js';
@@ -11,15 +11,20 @@ import {
     buildAssetPrompt,
     characterCreatePayload,
     creatorPrompt,
-    extractJsonObject,
+    memorySourceMatchesChat,
     memoryPrompt,
+    normalizeMemoryEnvelope,
     normalizeMemoryDraft,
     normalizeStudioSettings,
+    partitionNewMemories,
+    sceneMemoryPrompt,
     validateStudioDraft,
 } from './studio-core.js';
 
 const SETTINGS_KEY = 'codex_oauth_studio';
+const CHAT_STATE_KEY = 'amy_creator_studio';
 const PROVIDER_ID = 'codex-oauth';
+let chatSaveTimer = null;
 
 function settings() {
     extension_settings[SETTINGS_KEY] = normalizeStudioSettings(extension_settings[SETTINGS_KEY]);
@@ -28,6 +33,31 @@ function settings() {
 
 function persist() {
     saveSettingsDebounced();
+}
+
+function chatState() {
+    const input = chat_metadata[CHAT_STATE_KEY];
+    const state = input && typeof input === 'object' ? input : {};
+    chat_metadata[CHAT_STATE_KEY] = {
+        ...state,
+        pendingMemories: typeof state.pendingMemories === 'string' ? state.pendingMemories : '',
+        lastMemoryMessageCount: Math.max(0, Number(state.lastMemoryMessageCount) || 0),
+    };
+    return chat_metadata[CHAT_STATE_KEY];
+}
+
+function persistChat({ immediate = false } = {}) {
+    const chatId = String(getCurrentChatId() ?? '');
+    if (!chatId) return Promise.resolve();
+    if (chatSaveTimer) clearTimeout(chatSaveTimer);
+    const save = async () => {
+        chatSaveTimer = null;
+        if (String(getCurrentChatId() ?? '') !== chatId) return;
+        await saveMetadata();
+    };
+    if (immediate) return save();
+    chatSaveTimer = setTimeout(() => void save(), 500);
+    return Promise.resolve();
 }
 
 function currentModel() {
@@ -242,34 +272,50 @@ async function generateAndSetPortrait() {
     toastr.success(tr('studio.toast.portraitUpdated', { name: character.name }), tr('studio.error.actionTitle'));
 }
 
-function transcript(windowSize) {
+function transcriptWindow(windowSize) {
     const context = getContext();
-    return context.chat
-        .filter(message => !message.is_system && typeof message.mes === 'string' && message.mes.trim())
-        .slice(-windowSize)
-        .map(message => `${message.is_user ? context.name1 : (message.name || context.name2)}: ${message.mes}`)
-        .join('\n\n');
+    const messages = context.chat
+        .map((message, id) => ({ message, id }))
+        .filter(({ message }) => !message.is_system && typeof message.mes === 'string' && message.mes.trim())
+        .slice(-windowSize);
+    return {
+        text: messages.map(({ message }) => `${message.is_user ? context.name1 : (message.name || context.name2)}: ${message.mes}`).join('\n\n'),
+        source: {
+            chatId: String(getCurrentChatId() ?? ''),
+            startMessageId: messages[0]?.id ?? null,
+            endMessageId: messages.at(-1)?.id ?? null,
+            messageCount: messages.length,
+        },
+    };
+}
+
+async function prepareMemoryDraft(prompt, toastKey) {
+    const { text, source } = transcriptWindow(settings().memoryWindow);
+    if (!source.chatId || !text) throw new Error(tr('studio.error.openChatMemory'));
+    const raw = await codexText(prompt(text));
+    const memories = normalizeMemoryDraft(raw);
+    if (!memories.length) throw new Error(tr('studio.error.noMemories'));
+    const state = chatState();
+    state.pendingMemories = JSON.stringify({ source, memories }, null, 2);
+    state.lastMemoryMessageCount = getContext().chat.filter(message => !message.is_system).length;
+    await persistChat({ immediate: true });
+    renderSettings();
+    toastr.success(tr(toastKey, { count: memories.length }), tr('studio.error.actionTitle'));
 }
 
 async function extractMemories() {
-    const state = settings();
-    const text = transcript(state.memoryWindow);
-    if (!text) throw new Error(tr('studio.error.openChatMemory'));
-    const raw = await codexText(memoryPrompt(text));
-    const memories = normalizeMemoryDraft(raw);
-    if (!memories.length) throw new Error(tr('studio.error.noMemories'));
-    state.pendingMemories = JSON.stringify({ memories }, null, 2);
-    state.lastMemoryMessageCount = getContext().chat.filter(message => !message.is_system).length;
-    persist();
-    renderSettings();
-    toastr.success(tr('studio.toast.memoriesPrepared', { count: memories.length }), tr('studio.error.actionTitle'));
+    await prepareMemoryDraft(memoryPrompt, 'studio.toast.memoriesPrepared');
+}
+
+async function closeScene() {
+    await prepareMemoryDraft(sceneMemoryPrompt, 'studio.toast.scenePrepared');
 }
 
 async function maybePrepareAutomaticMemory() {
-    const state = settings();
-    if (!state.autoMemoryDraft || state.pendingMemories) return;
+    const state = chatState();
+    if (!settings().autoMemoryDraft || state.pendingMemories || !getCurrentChatId()) return;
     const messageCount = getContext().chat.filter(message => !message.is_system).length;
-    if (messageCount - state.lastMemoryMessageCount < state.autoMemoryEvery) return;
+    if (messageCount - state.lastMemoryMessageCount < settings().autoMemoryEvery) return;
     try {
         await extractMemories();
     } catch (error) {
@@ -277,8 +323,15 @@ async function maybePrepareAutomaticMemory() {
     }
 }
 
-async function saveMemoryEntries(memories, { confirm = true, source = 'memory_review' } = {}) {
+function assertMemorySource(source) {
+    if (source?.chatId && !memorySourceMatchesChat(source, getCurrentChatId())) {
+        throw new Error(tr('studio.error.memoryWrongChat', { expected: source.chatId, current: getCurrentChatId() ?? '-' }));
+    }
+}
+
+async function saveMemoryEntries(memories, { confirm = true, source = null, auditSource = 'memory_review' } = {}) {
     if (!memories.length) throw new Error(tr('studio.error.noValidMemories'));
+    assertMemorySource(source);
     const state = settings();
     if (confirm) {
         const confirmed = await Popup.show.confirm(
@@ -286,22 +339,29 @@ async function saveMemoryEntries(memories, { confirm = true, source = 'memory_re
             tr('studio.popup.saveMemoryBody', { count: memories.length }),
         );
         if (!confirmed) {
-            appendAudit(state, { tool: source, status: 'cancelled', summary: `${memories.length} memories` });
+            appendAudit(state, { tool: auditSource, status: 'cancelled', summary: `${memories.length} memories` });
             persist();
             return tr('studio.result.cancelled');
         }
     }
+    assertMemorySource(source);
     const bookName = await runSlash('/getchatbook create=true');
+    assertMemorySource(source);
     if (!bookName) throw new Error(tr('studio.error.chatBook'));
     const data = await loadWorldInfo(bookName) ?? { entries: {} };
+    assertMemorySource(source);
     data.entries ??= {};
-    for (const memory of memories) {
+    const { fresh, duplicates } = partitionNewMemories(memories, Object.values(data.entries));
+    const range = Number.isInteger(source?.startMessageId) && Number.isInteger(source?.endMessageId)
+        ? ` · #${source.startMessageId}–${source.endMessageId}`
+        : '';
+    for (const memory of fresh) {
         const entry = createWorldInfoEntry(bookName, data);
         if (!entry) throw new Error(tr('studio.error.memoryEntry'));
         Object.assign(entry, {
             key: memory.keys,
             content: `[${memory.kind}; importance ${memory.importance}/5] ${memory.content}`,
-            comment: memory.title,
+            comment: `${memory.title}${range}`,
             constant: false,
             vectorized: true,
             order: 200 + memory.importance,
@@ -309,18 +369,31 @@ async function saveMemoryEntries(memories, { confirm = true, source = 'memory_re
             disable: false,
         });
     }
-    await saveWorldInfo(bookName, data, true);
-    state.pendingMemories = '';
-    appendAudit(state, { tool: source, status: 'approved', summary: `${memories.length} memories → ${bookName}` });
+    if (fresh.length) await saveWorldInfo(bookName, data, true);
+    assertMemorySource(source);
+    chatState().pendingMemories = '';
+    appendAudit(state, {
+        tool: auditSource,
+        status: fresh.length ? 'approved' : 'skipped',
+        summary: `${fresh.length} saved, ${duplicates.length} duplicate → ${bookName}`,
+    });
     persist();
+    await persistChat({ immediate: true });
     renderSettings();
-    toastr.success(tr('studio.toast.memoriesSaved', { count: memories.length, book: bookName }), tr('studio.error.actionTitle'));
-    return tr('studio.result.memoriesSaved', { count: memories.length });
+    if (!fresh.length) {
+        toastr.info(tr('studio.toast.noNewMemories', { count: duplicates.length }), tr('studio.error.actionTitle'));
+    } else if (duplicates.length) {
+        toastr.success(tr('studio.toast.memoriesSavedWithDuplicates', { count: fresh.length, duplicates: duplicates.length, book: bookName }), tr('studio.error.actionTitle'));
+    } else {
+        toastr.success(tr('studio.toast.memoriesSaved', { count: fresh.length, book: bookName }), tr('studio.error.actionTitle'));
+    }
+    return tr('studio.result.memoriesSaved', { count: fresh.length });
 }
 
 async function savePendingMemories() {
-    const memories = normalizeMemoryDraft($('#amy-studio-memory-draft').val());
-    await saveMemoryEntries(memories);
+    const draft = normalizeMemoryEnvelope($('#amy-studio-memory-draft').val());
+    if (!draft.source.chatId) throw new Error(tr('studio.error.memoryMissingSource'));
+    await saveMemoryEntries(draft.memories, { source: draft.source });
 }
 
 function registerSafeTools() {
@@ -341,7 +414,11 @@ function registerSafeTools() {
             required: ['title', 'content', 'keys'],
         },
         shouldRegister: () => settings().enableSafeTools,
-        action: async args => saveMemoryEntries(normalizeMemoryDraft({ memories: [args] }), { confirm: true, source: 'tool_memory' }),
+        action: async args => saveMemoryEntries(normalizeMemoryDraft({ memories: [args] }), {
+            confirm: true,
+            source: transcriptWindow(1).source,
+            auditSource: 'tool_memory',
+        }),
     });
     ToolManager.registerFunctionTool({
         name: 'AmyStudioGenerateImage',
@@ -369,6 +446,7 @@ function renderAudit() {
 
 function renderSettings() {
     const state = settings();
+    const memoryState = chatState();
     $('#amy-studio-idea').val(state.idea);
     $('#amy-studio-draft').val(state.draft);
     $('#amy-studio-visual-anchor').val(state.visualAnchor);
@@ -379,7 +457,16 @@ function renderSettings() {
     $('#amy-studio-memory-window').val(state.memoryWindow);
     $('#amy-studio-auto-memory').prop('checked', state.autoMemoryDraft);
     $('#amy-studio-auto-memory-every').val(state.autoMemoryEvery);
-    $('#amy-studio-memory-draft').val(state.pendingMemories);
+    $('#amy-studio-memory-draft').val(memoryState.pendingMemories);
+    let source = null;
+    try {
+        source = memoryState.pendingMemories ? normalizeMemoryEnvelope(memoryState.pendingMemories).source : null;
+    } catch {
+        // Keep an in-progress manual edit visible without replacing it.
+    }
+    $('#amy-studio-memory-source').text(source?.chatId
+        ? tr('studio.memory.source', { chat: source.chatId, start: source.startMessageId ?? '-', end: source.endMessageId ?? '-' })
+        : tr('studio.memory.noSource'));
     $('#amy-studio-safe-tools').prop('checked', state.enableSafeTools);
     renderAudit();
 }
@@ -437,8 +524,9 @@ function createPanel() {
                     <label><span data-i18n="amyCreatorStudio.studio.memory.window">Recent messages to inspect</span><input id="amy-studio-memory-window" class="text_pole" type="number" min="4" max="100"></label>
                     <label class="checkbox_label"><input id="amy-studio-auto-memory" type="checkbox"><span data-i18n="amyCreatorStudio.studio.memory.auto">Automatically prepare a review draft</span></label>
                     <label><span data-i18n="amyCreatorStudio.studio.memory.every">Prepare after this many new messages</span><input id="amy-studio-auto-memory-every" class="text_pole" type="number" min="4" max="100"></label>
-                    <div class="flex-container"><button id="amy-studio-memory-extract" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.extract">Extract memory draft</button><button id="amy-studio-memory-save" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.save">Save reviewed memories</button></div>
+                    <div class="flex-container"><button id="amy-studio-memory-extract" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.extract">Extract memory draft</button><button id="amy-studio-scene-close" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.sceneClose">Prepare scene close</button><button id="amy-studio-memory-save" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.save">Save reviewed memories</button></div>
                     <label><span data-i18n="amyCreatorStudio.studio.memory.draft">Reviewable memory draft</span><textarea id="amy-studio-memory-draft" class="text_pole monospace" rows="12"></textarea></label>
+                    <small id="amy-studio-memory-source"></small>
                     <small data-i18n="amyCreatorStudio.studio.memory.note">Memories are atomic, stored in the current chat lorebook, and marked for vector retrieval. Nothing is written until Save is confirmed.</small>
                 </section>
                 <section data-amy-tab="tools" class="displayNone">
@@ -458,14 +546,18 @@ function createPanel() {
         $(this).addClass('selected');
     });
     $('.amy-studio-tab[data-tab="character"]').addClass('selected');
-    $('#amy-studio-idea, #amy-studio-draft, #amy-studio-visual-anchor, #amy-studio-visual-style, #amy-studio-asset-detail, #amy-studio-memory-draft').on('input', function () {
+    $('#amy-studio-idea, #amy-studio-draft, #amy-studio-visual-anchor, #amy-studio-visual-style, #amy-studio-asset-detail').on('input', function () {
         const state = settings();
         const map = {
             'amy-studio-idea': 'idea', 'amy-studio-draft': 'draft', 'amy-studio-visual-anchor': 'visualAnchor',
-            'amy-studio-visual-style': 'visualStyle', 'amy-studio-asset-detail': 'assetDetail', 'amy-studio-memory-draft': 'pendingMemories',
+            'amy-studio-visual-style': 'visualStyle', 'amy-studio-asset-detail': 'assetDetail',
         };
         state[map[this.id]] = String($(this).val() ?? '');
         persist();
+    });
+    $('#amy-studio-memory-draft').on('input', function () {
+        chatState().pendingMemories = String($(this).val() ?? '');
+        persistChat();
     });
     $('#amy-studio-asset-type').on('change', function () { settings().assetType = String($(this).val()); persist(); });
     $('#amy-studio-expression-label').on('change', function () { settings().expressionLabel = String($(this).val()); persist(); });
@@ -473,8 +565,9 @@ function createPanel() {
     $('#amy-studio-auto-memory').on('change', function () {
         const state = settings();
         state.autoMemoryDraft = Boolean($(this).prop('checked'));
-        state.lastMemoryMessageCount = getContext().chat.filter(message => !message.is_system).length;
+        chatState().lastMemoryMessageCount = getContext().chat.filter(message => !message.is_system).length;
         persist();
+        persistChat();
     });
     $('#amy-studio-auto-memory-every').on('change', function () { settings().autoMemoryEvery = Math.min(100, Math.max(4, Number($(this).val()) || 12)); persist(); });
     $('#amy-studio-safe-tools').on('change', function () {
@@ -512,6 +605,7 @@ function createPanel() {
     bindAction('#amy-studio-asset-generate', () => generateAsset());
     bindAction('#amy-studio-portrait-set', generateAndSetPortrait);
     bindAction('#amy-studio-memory-extract', extractMemories);
+    bindAction('#amy-studio-scene-close', closeScene);
     bindAction('#amy-studio-memory-save', savePendingMemories);
     renderSettings();
 }
@@ -526,4 +620,5 @@ export function initCreatorStudio() {
     createPanel();
     registerSafeTools();
     eventSource.on(event_types.MESSAGE_RECEIVED, maybePrepareAutomaticMemory);
+    eventSource.on(event_types.CHAT_CHANGED, renderSettings);
 }

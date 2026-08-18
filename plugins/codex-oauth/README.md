@@ -89,6 +89,12 @@ separate confirmed action. Approved memories become vector-enabled entries in
 the chat-bound lorebook. Optional automatic mode prepares drafts only; it never
 writes them without review.
 
+Memory drafts are stored in chat metadata and include their source chat and
+message range. A draft cannot be saved from another chat. Exact duplicate
+memories are skipped. **Close scene** uses the same review flow to prepare a
+chronological scene summary, durable state and relationship changes, and open
+story threads without promoting future plot ideas to facts.
+
 ### Safe tools
 
 Tool calling is disabled by default. When enabled, the provider filters the
