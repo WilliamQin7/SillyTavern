@@ -1,5 +1,5 @@
 import { CodexProviderError } from './upstream/errors.js';
-import { responseEventFailed, responseEventTextDelta, toChatCompletionChunk } from './upstream/protocol.js';
+import { responseEventFailed, responseEventTextDelta, responseEventToolDelta, toChatCompletionChunk } from './upstream/protocol.js';
 
 // SillyTavern expects an active Chat Completions SSE response while a reasoning
 // model is working. Emit a syntactically valid no-op chunk every 100 ms until
@@ -163,16 +163,49 @@ export async function collectCodexImage({ upstreamBody, onEvent }) {
 export async function collectCodexStream({ upstreamBody, model, requestId, onEvent }) {
     let text = '';
     let completed;
+    const functionCalls = new Map();
     for await (const event of codexEvents(upstreamBody)) {
         onEvent?.(event);
         text += responseEventTextDelta(event);
+        if (event.type === 'response.output_item.added' && event.item?.type === 'function_call') {
+            const key = event.item.id ?? event.item.call_id ?? event.output_index;
+            functionCalls.set(key, { ...event.item, arguments: String(event.item.arguments ?? '') });
+        }
+        if (event.type === 'response.function_call_arguments.delta') {
+            const key = event.item_id ?? event.output_index;
+            const current = functionCalls.get(key) ?? {
+                type: 'function_call',
+                id: event.item_id,
+                call_id: event.call_id,
+                name: event.name,
+                arguments: '',
+            };
+            current.arguments += String(event.delta ?? '');
+            functionCalls.set(key, current);
+        }
+        if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') {
+            const key = event.item.id ?? event.item.call_id ?? event.output_index;
+            const current = functionCalls.get(key) ?? {};
+            functionCalls.set(key, {
+                ...current,
+                ...event.item,
+                arguments: String(event.item.arguments ?? current.arguments ?? ''),
+            });
+        }
         if (event.type === 'response.completed' || event.type === 'response.incomplete') completed = event.response ?? event;
+    }
+    const output = Array.isArray(completed?.output) ? [...completed.output] : [];
+    const knownCalls = new Set(output
+        .filter(item => item?.type === 'function_call')
+        .flatMap(item => [item.id, item.call_id].filter(Boolean)));
+    for (const call of functionCalls.values()) {
+        if (!knownCalls.has(call.id) && !knownCalls.has(call.call_id)) output.push(call);
     }
     return {
         id: completed?.id ?? requestId,
         model: completed?.model ?? model,
         output_text: typeof completed?.output_text === 'string' ? completed.output_text : text,
-        output: completed?.output,
+        output,
         status: completed?.status ?? 'completed',
         usage: completed?.usage,
     };
@@ -181,19 +214,24 @@ export async function collectCodexStream({ upstreamBody, model, requestId, onEve
 /** Streams Codex Responses SSE into SillyTavern's native Chat Completion SSE contract. */
 export async function forwardCodexStream({ upstreamBody, response, model, requestId, onEvent }) {
     let finishReason = 'stop';
+    let sawToolCall = false;
+    const toolIndexes = new Map();
     for await (const event of codexEvents(upstreamBody)) {
         onEvent?.(event);
         if (event.type === 'response.incomplete') finishReason = 'length';
         const delta = responseEventTextDelta(event);
+        const toolDelta = responseEventToolDelta(event, toolIndexes);
+        if (toolDelta) sawToolCall = true;
         // Codex emits lifecycle/reasoning events before visible text. Convert
         // those to harmless no-op chunks so the downstream stream remains
         // active even when the model takes a long time to reason.
         writeSse(response, toChatCompletionChunk({
             id: requestId,
             model,
-            delta: delta ? { content: delta } : {},
+            delta: delta ? { content: delta } : (toolDelta ? { tool_calls: [toolDelta] } : {}),
         }));
     }
+    if (finishReason === 'stop' && sawToolCall) finishReason = 'tool_calls';
     writeSse(response, toChatCompletionChunk({
         id: requestId,
         model,

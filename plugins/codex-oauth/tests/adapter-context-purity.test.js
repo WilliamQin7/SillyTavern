@@ -15,7 +15,6 @@ test('adapter preserves the final SillyTavern message roles, order, and content 
         messages,
         stream: true,
         temperature: 0.9,
-        tools: [{ type: 'function', function: { name: 'ignored' } }],
     }, { reasoningEffort: 'medium', serviceTier: 'priority' });
 
     assert.deepEqual(payload, {
@@ -41,12 +40,44 @@ test('Codex upstream transport remains SSE when SillyTavern requests a normal re
     assert.equal(payload.stream, true);
 });
 
-test('request validation rejects tool schemas rather than silently passing them upstream', () => {
+test('request validation accepts bounded function schemas and rejects malformed tools', () => {
+    assert.doesNotThrow(() => validateGenerateRequest({
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [{ type: 'function', function: { name: 'AmyStudioRemember', parameters: { type: 'object' } } }],
+    }));
     assert.throws(() => validateGenerateRequest({
         model: 'gpt-5.5',
         messages: [{ role: 'user', content: 'hello' }],
         tools: [{ type: 'function' }],
-    }), error => error.code === 'TOOLS_UNSUPPORTED');
+    }), error => error.code === 'INVALID_TOOL');
+});
+
+test('adapter preserves function-call linkage across a tool round trip', () => {
+    const payload = adaptSillyTavernRequest({
+        model: 'gpt-5.5',
+        messages: [
+            { role: 'user', content: 'remember this' },
+            {
+                role: 'assistant', content: null,
+                tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'AmyStudioRemember', arguments: '{"title":"A"}' } }],
+            },
+            { role: 'tool', tool_call_id: 'call-1', content: 'Saved.' },
+        ],
+        tools: [{
+            type: 'function',
+            function: { name: 'AmyStudioRemember', description: 'Remember', parameters: { type: 'object' } },
+        }],
+        tool_choice: 'auto',
+    });
+    assert.deepEqual(payload.input.slice(-2), [
+        { type: 'function_call', call_id: 'call-1', name: 'AmyStudioRemember', arguments: '{"title":"A"}' },
+        { type: 'function_call_output', call_id: 'call-1', output: 'Saved.' },
+    ]);
+    assert.deepEqual(payload.tools, [{
+        type: 'function', name: 'AmyStudioRemember', description: 'Remember', parameters: { type: 'object' }, strict: false,
+    }]);
+    assert.equal(payload.parallel_tool_calls, false);
 });
 
 test('request validation rejects model IDs that can inject log lines or exceed the bounded field', () => {

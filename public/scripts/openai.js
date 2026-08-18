@@ -6844,9 +6844,17 @@ export function initOpenAI() {
     });
 
     $('#chat_completion_source').on('change', function () {
+        const selectedSource = $(this).find(':selected').val();
+        // Downloadable providers register after core settings are restored. A
+        // saved external value therefore has no matching <option> for a short
+        // window during startup. Preserve it until the provider adds its UI;
+        // String(undefined) would otherwise permanently corrupt the setting.
+        if (selectedSource === undefined) {
+            return;
+        }
         cancelStatusCheck('Chat Completion source changed');
         model_list = [];
-        oai_settings.chat_completion_source = String($(this).find(':selected').val());
+        oai_settings.chat_completion_source = String(selectedSource);
         toggleChatCompletionForms();
         saveSettingsDebounced();
         reconnectOpenAi();

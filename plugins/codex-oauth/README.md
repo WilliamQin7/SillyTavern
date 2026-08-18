@@ -44,3 +44,57 @@ credential file unreadable and requires signing in again.
 
 The image source reuses the selected Codex chat model and the same encrypted
 login. No OpenAI API key is required.
+
+## Amy Creator Studio
+
+Open **Extensions → Amy Creator Studio**. The bundled studio deliberately uses
+reviewable drafts and existing SillyTavern storage formats instead of a private
+database.
+
+### Character and lorebook
+
+1. Describe a character and setting, then choose **Generate draft**.
+2. Review or edit the generated Character Card V2 JSON.
+3. Choose **Validate**, then **Import character + lorebook**.
+
+Validation requires the Character Card V2 envelope and core fields. Unknown
+namespaced card `extensions` are preserved. Import creates a new linked World
+Info file and never overwrites a lorebook with the same name.
+
+### Visual assets
+
+Keep the character's invariant appearance in **Visual identity anchor** and the
+shared art direction in **Style bible**.
+
+- Portrait: saved through the Image Generation gallery, or generated and set as
+  the current character avatar after confirmation.
+- Expression: generated as a portrait-oriented image and installed in the
+  current character's expression-sprite folder under the selected label.
+- Background: generated in landscape orientation, uploaded to backgrounds, and
+  selected for the current chat.
+
+### Long-term memory
+
+Memory extraction reads a bounded recent-chat window and creates an editable
+JSON draft of atomic facts, events, relationships, goals, and state. Saving is a
+separate confirmed action. Approved memories become vector-enabled entries in
+the chat-bound lorebook. Optional automatic mode prepares drafts only; it never
+writes them without review.
+
+### Safe tools
+
+Tool calling is disabled by default. When enabled, the provider filters the
+SillyTavern tool list to exactly these bundled tools:
+
+- `AmyStudioRemember`
+- `AmyStudioGenerateImage`
+
+Both show an on-screen confirmation before a lorebook write or image-generation
+request. Other built-in and third-party tools are not sent to Codex through this
+provider. Approved and cancelled actions are recorded in a bounded local audit
+trail in extension settings; prompts, generated images, credentials, and tool
+results are not added to server logs.
+
+The Codex/ChatGPT compatibility endpoint is not a public API contract. Text,
+image, and function-call event shapes may change and should be re-tested after
+provider or SillyTavern upgrades.

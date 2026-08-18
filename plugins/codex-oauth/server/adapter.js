@@ -4,7 +4,7 @@ export const capabilities = Object.freeze({
     streaming: true,
     reasoning: true,
     temperature: false,
-    tools: false,
+    tools: true,
     images: true,
 });
 
@@ -16,6 +16,8 @@ export function adaptSillyTavernRequest(body, { reasoningEffort, serviceTier } =
         stream: body.stream,
         reasoningEffort,
         serviceTier,
+        tools: body.tools,
+        toolChoice: body.tool_choice,
     });
 }
 

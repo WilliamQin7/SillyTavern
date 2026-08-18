@@ -3,6 +3,7 @@ import { extension_settings } from '../../../extensions.js';
 import { oai_settings } from '../../../openai.js';
 import { registerExternalChatCompletionProvider } from '../../../chat-completion-provider-registry.js';
 import { DEFAULT_PROVIDER_SETTINGS, loadProviderSettings, selectPreferredModel } from './state.js';
+import { filterSafeTools, normalizeStudioSettings } from './studio-core.js';
 
 const PROVIDER_ID = 'codex-oauth';
 const API = `/api/plugins/${PROVIDER_ID}`;
@@ -265,7 +266,7 @@ function installProvider() {
     unregisterProvider?.();
     unregisterProvider = registerExternalChatCompletionProvider({
         id: PROVIDER_ID,
-        capabilities: { tools: false, images: false, temperature: false },
+        capabilities: { tools: true, images: false, temperature: false },
         getModel: currentModel,
         configureRequest(generateData) {
             const provider = settingsFor();
@@ -274,8 +275,15 @@ function installProvider() {
             delete generateData.frequency_penalty;
             delete generateData.presence_penalty;
             delete generateData.logit_bias;
-            delete generateData.tools;
-            delete generateData.tool_choice;
+            const studio = normalizeStudioSettings(extension_settings.codex_oauth_studio);
+            const safeTools = filterSafeTools(generateData.tools, studio.enableSafeTools, studio.safeToolNames);
+            if (safeTools.length) {
+                generateData.tools = safeTools;
+                generateData.tool_choice = 'auto';
+            } else {
+                delete generateData.tools;
+                delete generateData.tool_choice;
+            }
             generateData.codex_oauth = {
                 reasoningEffort: provider.reasoningEffort === 'auto' ? undefined : provider.reasoningEffort,
                 speedMode: provider.speedMode,

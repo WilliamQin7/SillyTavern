@@ -47,6 +47,6 @@ export const CODEX_CAPABILITIES = Object.freeze({
     frequencyPenalty: false,
     presencePenalty: false,
     maxOutputTokens: false,
-    tools: false,
+    tools: true,
     images: true,
 });

@@ -26,3 +26,12 @@
 }
 
 #codex-oauth-prompt-debug { max-height: 12rem; overflow: auto; white-space: pre-wrap; }
+
+.amy-studio .inline-drawer-content { gap: 0.75rem; }
+.amy-studio-tabs { flex-wrap: wrap; margin: 0.5rem 0; }
+.amy-studio-tab.selected { border-color: var(--SmartThemeQuoteColor); color: var(--SmartThemeQuoteColor); }
+.amy-studio section { display: flex; flex-direction: column; gap: 0.65rem; }
+.amy-studio section.displayNone { display: none; }
+.amy-studio textarea { width: 100%; resize: vertical; }
+.amy-studio .monospace, .amy-studio-audit { font-family: var(--monoFontFamily, monospace); }
+.amy-studio-audit { max-height: 12rem; overflow: auto; white-space: pre-wrap; word-break: break-word; }

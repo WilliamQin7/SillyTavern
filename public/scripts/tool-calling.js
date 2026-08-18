@@ -1,6 +1,7 @@
 import { DOMPurify } from '../lib.js';
 
 import { addOneMessage, chat, event_types, eventSource, getGeneratingApi, getGeneratingModel, main_api, saveChatConditional, system_avatar, systemUserName } from '../script.js';
+import { getExternalChatCompletionProvider } from './chat-completion-provider-registry.js';
 import { chat_completion_sources, custom_prompt_post_processing_types, getChatCompletionModel, model_list, oai_settings } from './openai.js';
 import { Popup } from './popup.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
@@ -618,6 +619,11 @@ export class ToolManager {
         const allowedPromptPostProcessing = [NONE, MERGE_TOOLS, SEMI_TOOLS, STRICT_TOOLS];
         if (!allowedPromptPostProcessing.includes(settings.custom_prompt_post_processing)) {
             return false;
+        }
+
+        const externalProvider = getExternalChatCompletionProvider(settings.chat_completion_source);
+        if (externalProvider) {
+            return externalProvider.capabilities?.tools !== false;
         }
 
         const currentModel = Array.isArray(model_list) ? model_list.find(m => m.id === model) : null;

@@ -21,15 +21,58 @@ export function toResponsesInputMessage(message) {
     return { role: message.role, content };
 }
 
+/** Converts Chat Completions history, including function calls, to Responses items. */
+export function toResponsesInputItems(message) {
+    if (message.role === 'tool') {
+        const output = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+        return [{ type: 'function_call_output', call_id: message.tool_call_id, output }];
+    }
+
+    const items = [];
+    if (message.content !== null && message.content !== undefined && message.content !== '') {
+        items.push(toResponsesInputMessage(message));
+    }
+    if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
+        for (const call of message.tool_calls) {
+            items.push({
+                type: 'function_call',
+                call_id: call.id,
+                name: call.function.name,
+                arguments: call.function.arguments,
+            });
+        }
+    }
+    return items;
+}
+
+export function toResponsesTool(tool) {
+    return {
+        type: 'function',
+        name: tool.function.name,
+        description: String(tool.function.description ?? ''),
+        parameters: tool.function.parameters,
+        strict: false,
+    };
+}
+
+export function toResponsesToolChoice(choice) {
+    if (choice === undefined || choice === null) return undefined;
+    if (['auto', 'none', 'required'].includes(choice)) return choice;
+    if (choice?.type === 'function' && typeof choice.function?.name === 'string') {
+        return { type: 'function', name: choice.function.name };
+    }
+    return 'auto';
+}
+
 /**
  * Convert SillyTavern's final Chat Completion message array to the Responses
  * payload used by the Codex backend. No instructions, tools, or agent context
  * are inserted here.
  */
-export function toResponsesRequest({ model, messages, stream, reasoningEffort, serviceTier }) {
+export function toResponsesRequest({ model, messages, stream, reasoningEffort, serviceTier, tools, toolChoice }) {
     const body = {
         model,
-        input: messages.map(toResponsesInputMessage),
+        input: messages.flatMap(toResponsesInputItems),
         // The Codex compatibility endpoint requires SSE even when SillyTavern
         // requested a non-streaming reply. The route aggregates that SSE only
         // for the non-streaming caller; browser streaming remains native.
@@ -38,6 +81,11 @@ export function toResponsesRequest({ model, messages, stream, reasoningEffort, s
     };
     if (reasoningEffort) body.reasoning = { effort: reasoningEffort };
     if (serviceTier) body.service_tier = serviceTier;
+    if (Array.isArray(tools) && tools.length) {
+        body.tools = tools.map(toResponsesTool);
+        body.tool_choice = toResponsesToolChoice(toolChoice);
+        body.parallel_tool_calls = false;
+    }
     return body;
 }
 
@@ -67,6 +115,14 @@ function usageFromResponse(response) {
 /** Adapts a completed Responses object to SillyTavern's Chat Completion response contract. */
 export function toChatCompletionResponse(response, model) {
     const usage = usageFromResponse(response);
+    const functionCalls = (Array.isArray(response?.output) ? response.output : [])
+        .filter(item => item?.type === 'function_call')
+        .map(item => ({
+            id: item.call_id ?? item.id,
+            type: 'function',
+            function: { name: item.name, arguments: String(item.arguments ?? '') },
+        }));
+    const content = extractOutputText(response);
     return {
         id: response?.id ?? `codex-${crypto.randomUUID()}`,
         object: 'chat.completion',
@@ -74,8 +130,12 @@ export function toChatCompletionResponse(response, model) {
         model: response?.model ?? model,
         choices: [{
             index: 0,
-            message: { role: 'assistant', content: extractOutputText(response) },
-            finish_reason: response?.status === 'incomplete' ? 'length' : 'stop',
+            message: {
+                role: 'assistant',
+                content: content || null,
+                ...(functionCalls.length ? { tool_calls: functionCalls } : {}),
+            },
+            finish_reason: response?.status === 'incomplete' ? 'length' : (functionCalls.length ? 'tool_calls' : 'stop'),
         }],
         ...(usage ? { usage } : {}),
     };
@@ -96,6 +156,26 @@ export function responseEventTextDelta(event) {
     const type = event?.type;
     if (type === 'response.output_text.delta') return typeof event.delta === 'string' ? event.delta : '';
     return '';
+}
+
+/** Convert Responses function-call lifecycle events to Chat Completion deltas. */
+export function responseEventToolDelta(event, indexByItemId) {
+    if (event?.type === 'response.output_item.added' && event.item?.type === 'function_call') {
+        const index = indexByItemId.size;
+        indexByItemId.set(event.item.id ?? event.output_index, index);
+        return {
+            index,
+            id: event.item.call_id ?? event.item.id,
+            type: 'function',
+            function: { name: event.item.name, arguments: String(event.item.arguments ?? '') },
+        };
+    }
+    if (event?.type === 'response.function_call_arguments.delta') {
+        const key = event.item_id ?? event.output_index;
+        const index = indexByItemId.get(key) ?? Number(event.output_index ?? 0);
+        return { index, function: { arguments: String(event.delta ?? '') } };
+    }
+    return null;
 }
 
 export function responseEventFailed(event) {
