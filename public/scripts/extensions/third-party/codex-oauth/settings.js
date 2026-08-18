@@ -4,6 +4,7 @@ import { oai_settings } from '../../../openai.js';
 import { registerExternalChatCompletionProvider } from '../../../chat-completion-provider-registry.js';
 import { DEFAULT_PROVIDER_SETTINGS, loadProviderSettings, selectPreferredModel } from './state.js';
 import { filterSafeTools, normalizeStudioSettings } from './studio-core.js';
+import { tr } from './i18n.js';
 
 const PROVIDER_ID = 'codex-oauth';
 const API = `/api/plugins/${PROVIDER_ID}`;
@@ -32,15 +33,15 @@ async function request(path, body = undefined, method = 'POST') {
         cache: 'no-cache',
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data?.error?.message || response.statusText || 'Codex Provider request failed');
+    if (!response.ok) throw new Error(data?.error?.message || response.statusText || tr('provider.requestFailed'));
     return data;
 }
 
 function setStatus(status, error = '') {
     const authenticated = Boolean(status?.authenticated);
-    const source = status?.credentialSource === 'codex-cli' ? ' · local Codex sign-in' : '';
+    const source = status?.credentialSource === 'codex-cli' ? tr('provider.status.local') : '';
     $('#codex-oauth-status').toggleClass('success', authenticated).toggleClass('failure', Boolean(error));
-    $('#codex-oauth-status').text(error || (authenticated ? `● Signed in${source}` : '○ Not signed in'));
+    $('#codex-oauth-status').text(error || (authenticated ? `${tr('provider.status.signedIn')}${source}` : tr('provider.status.notSignedIn')));
     $('#codex-oauth-login').toggle(!authenticated);
     $('#codex-oauth-logout').toggle(authenticated);
     $('#codex-oauth-refresh-auth').toggle(authenticated);
@@ -53,7 +54,7 @@ async function refreshStatus() {
         setStatus(status);
         return status;
     } catch (error) {
-        setStatus(null, '○ Server plugin inactive');
+        setStatus(null, tr('provider.status.inactive'));
         return null;
     }
 }
@@ -67,13 +68,13 @@ function renderReasoningOptions() {
     const selected = modelById(currentModel());
     const efforts = selected?.capabilities?.reasoningEfforts ?? [];
     const select = $('#codex-oauth-reasoning');
-    select.empty().append(new Option('Auto (model default)', 'auto'));
+    select.empty().append(new Option(tr('provider.reasoningAuto'), 'auto'));
     for (const effort of efforts) select.append(new Option(effort, effort));
     const supported = efforts.includes(provider.reasoningEffort);
     select.val(supported ? provider.reasoningEffort : 'auto');
     if (!supported) provider.reasoningEffort = 'auto';
     select.prop('disabled', efforts.length === 0);
-    $('#codex-oauth-reasoning-note').text(efforts.length ? '' : 'No confirmed reasoning-effort metadata is bundled for this model. Manual values are still allowed.');
+    $('#codex-oauth-reasoning-note').text(efforts.length ? '' : tr('provider.reasoningNote'));
 }
 
 function renderSpeedMode() {
@@ -83,8 +84,8 @@ function renderSpeedMode() {
     if (!supportsFast && provider.speedMode === 'fast') provider.speedMode = 'standard';
     $('#codex-oauth-speed').val(provider.speedMode).prop('disabled', !supportsFast);
     $('#codex-oauth-speed-note').text(supportsFast
-        ? 'Fast uses the model priority service tier and may consume allowance more quickly.'
-        : 'Fast mode is not advertised for this model.');
+        ? tr('provider.speedFastNote')
+        : tr('provider.speedUnavailable'));
 }
 
 function renderModels() {
@@ -110,7 +111,7 @@ async function refreshModels(force = true) {
         models = Array.isArray(result.data) ? result.data : [];
         renderModels();
     } catch (error) {
-        toastr.warning(error.message, 'Codex models');
+        toastr.warning(error.message, tr('provider.modelsTitle'));
     }
 }
 
@@ -137,33 +138,33 @@ function createPanel() {
     if ($('#codex-oauth-form').length) return;
     const panel = $(
         `<section id="codex-oauth-form" data-source="${PROVIDER_ID}" class="codex-oauth-panel flex-container flexFlowColumn">
-            <h4>Codex（ChatGPT）</h4>
-            <div id="codex-oauth-status" class="codex-oauth-status">○ Not signed in</div>
+            <h4 data-i18n="amyCreatorStudio.provider.title">Codex (ChatGPT)</h4>
+            <div id="codex-oauth-status" class="codex-oauth-status" data-i18n="amyCreatorStudio.provider.status.notSignedIn">○ Not signed in</div>
             <div class="flex-container codex-oauth-actions">
-                <button id="codex-oauth-login" type="button" class="menu_button">Sign in to ChatGPT</button>
-                <button id="codex-oauth-logout" type="button" class="menu_button displayNone">Disconnect from SillyTavern</button>
-                <button id="codex-oauth-refresh-auth" type="button" class="menu_button displayNone">Refresh sign-in</button>
+                <button id="codex-oauth-login" type="button" class="menu_button" data-i18n="amyCreatorStudio.provider.login">Sign in to ChatGPT</button>
+                <button id="codex-oauth-logout" type="button" class="menu_button displayNone" data-i18n="amyCreatorStudio.provider.disconnect">Disconnect from SillyTavern</button>
+                <button id="codex-oauth-refresh-auth" type="button" class="menu_button displayNone" data-i18n="amyCreatorStudio.provider.refresh">Refresh sign-in</button>
             </div>
-            <label>Model<select id="codex-oauth-model" class="text_pole wide100p"></select></label>
-            <label>Manual model ID<input id="codex-oauth-manual-model" class="text_pole wide100p" autocomplete="off" placeholder="Optional model ID not present in the bundled list"></label>
-            <label>Reasoning Effort<select id="codex-oauth-reasoning" class="text_pole wide100p"></select></label>
+            <label><span data-i18n="amyCreatorStudio.provider.model">Model</span><select id="codex-oauth-model" class="text_pole wide100p"></select></label>
+            <label><span data-i18n="amyCreatorStudio.provider.manualModel">Manual model ID</span><input id="codex-oauth-manual-model" class="text_pole wide100p" autocomplete="off" placeholder="Optional model ID not present in the bundled list" data-i18n="[placeholder]amyCreatorStudio.provider.manualPlaceholder"></label>
+            <label><span data-i18n="amyCreatorStudio.provider.reasoning">Reasoning Effort</span><select id="codex-oauth-reasoning" class="text_pole wide100p"></select></label>
             <small id="codex-oauth-reasoning-note"></small>
-            <label>Speed mode<select id="codex-oauth-speed" class="text_pole wide100p">
-                <option value="standard">Standard</option>
-                <option value="fast">Fast (higher allowance use)</option>
+            <label><span data-i18n="amyCreatorStudio.provider.speed">Speed mode</span><select id="codex-oauth-speed" class="text_pole wide100p">
+                <option value="standard" data-i18n="amyCreatorStudio.provider.speedStandard">Standard</option>
+                <option value="fast" data-i18n="amyCreatorStudio.provider.speedFast">Fast (higher allowance use)</option>
             </select></label>
             <small id="codex-oauth-speed-note"></small>
-            <label>Log level<select id="codex-oauth-log-level" class="text_pole wide100p">
-                <option value="brief">Brief (start, finish, error)</option>
-                <option value="normal">Normal (major request stages)</option>
-                <option value="detailed">Detailed (stream and transport stages)</option>
+            <label><span data-i18n="amyCreatorStudio.provider.logLevel">Log level</span><select id="codex-oauth-log-level" class="text_pole wide100p">
+                <option value="brief" data-i18n="amyCreatorStudio.provider.logBrief">Brief (start, finish, error)</option>
+                <option value="normal" data-i18n="amyCreatorStudio.provider.logNormal">Normal (major request stages)</option>
+                <option value="detailed" data-i18n="amyCreatorStudio.provider.logDetailed">Detailed (stream and transport stages)</option>
             </select></label>
             <div class="flex-container codex-oauth-actions">
-                <button id="codex-oauth-models" type="button" class="menu_button">Reload models</button>
-                <button id="codex-oauth-test" type="button" class="menu_button">Test connection</button>
+                <button id="codex-oauth-models" type="button" class="menu_button" data-i18n="amyCreatorStudio.provider.reloadModels">Reload models</button>
+                <button id="codex-oauth-test" type="button" class="menu_button" data-i18n="amyCreatorStudio.provider.testConnection">Test connection</button>
             </div>
-            <label class="checkbox_label"><input id="codex-oauth-debug" type="checkbox"><span>Show outgoing prompt structure</span></label>
-            <small>For an admin user, an existing local Codex sign-in is reused automatically and never modified. Disconnecting affects SillyTavern only. No local agent prompt is added; prompts and generated images are never written to provider logs.</small>
+            <label class="checkbox_label"><input id="codex-oauth-debug" type="checkbox"><span data-i18n="amyCreatorStudio.provider.showPrompt">Show outgoing prompt structure</span></label>
+            <small data-i18n="amyCreatorStudio.provider.privacy">For an admin user, an existing local Codex sign-in is reused automatically and never modified. Disconnecting affects SillyTavern only. No local agent prompt is added; prompts and generated images are never written to provider logs.</small>
             <pre id="codex-oauth-prompt-debug" class="displayNone"></pre>
         </section>`,
     );
@@ -175,10 +176,10 @@ function createPanel() {
             const result = await request('/auth/login', {});
             if (result?.reused) {
                 await refreshStatus();
-                toastr.success('Reused the existing local Codex sign-in.', 'Codex');
+                toastr.success(tr('provider.reused'), 'Codex');
                 return;
             }
-            toastr.info('The system browser is open. Status will update after ChatGPT sign-in completes.', 'Codex');
+            toastr.info(tr('provider.browserOpen'), 'Codex');
             clearInterval(statusPoll);
             let remaining = 150;
             statusPoll = setInterval(async () => {
@@ -186,7 +187,7 @@ function createPanel() {
                 if (status?.authenticated || --remaining <= 0) clearInterval(statusPoll);
             }, 2000);
         } catch (error) {
-            toastr.error(error.message, 'Codex sign-in');
+            toastr.error(error.message, tr('provider.signInTitle'));
         }
     });
     $('#codex-oauth-logout').on('click', async () => {
@@ -194,7 +195,7 @@ function createPanel() {
             await request('/auth/logout', {});
             await refreshStatus();
         } catch (error) {
-            toastr.error(error.message, 'Codex sign-out');
+            toastr.error(error.message, tr('provider.signOutTitle'));
         }
     });
     $('#codex-oauth-refresh-auth').on('click', async () => {
@@ -202,7 +203,7 @@ function createPanel() {
             await request('/auth/refresh', {});
             await refreshStatus();
         } catch (error) {
-            toastr.error(error.message, 'Codex refresh');
+            toastr.error(error.message, tr('provider.refreshTitle'));
         }
     });
     $('#codex-oauth-models').on('click', () => refreshModels(true));
@@ -252,12 +253,12 @@ function createPanel() {
                 }),
             });
             const reply = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(reply?.error?.message || 'Connection test failed.');
+            if (!response.ok) throw new Error(reply?.error?.message || tr('provider.connectionFailed'));
             const text = reply?.choices?.[0]?.message?.content ?? '';
-            if (String(text).trim() !== 'OK') throw new Error(`Unexpected response: ${String(text).slice(0, 80)}`);
-            toastr.success('Codex connection test succeeded.', 'Codex');
+            if (String(text).trim() !== 'OK') throw new Error(tr('provider.unexpectedResponse', { response: String(text).slice(0, 80) }));
+            toastr.success(tr('provider.connectionSucceeded'), 'Codex');
         } catch (error) {
-            toastr.error(error.message, 'Codex connection test');
+            toastr.error(error.message, tr('provider.connectionTitle'));
         }
     });
 }

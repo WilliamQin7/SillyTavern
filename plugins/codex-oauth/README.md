@@ -51,6 +51,14 @@ Open **Extensions → Amy Creator Studio**. The bundled studio deliberately uses
 reviewable drafts and existing SillyTavern storage formats instead of a private
 database.
 
+The connection panel, Creator Studio controls, confirmations, validation
+messages, and notifications follow SillyTavern's selected interface language.
+English, Simplified Chinese, and Traditional Chinese are bundled using
+SillyTavern's native extension `i18n` manifest. English remains the fallback
+for any other locale. Another language can be added with one namespaced JSON
+file under `public/scripts/extensions/third-party/codex-oauth/locales/` and one
+manifest mapping, without changing the feature code.
+
 ### Character and lorebook
 
 1. Describe a character and setting, then choose **Generate draft**.

@@ -5,6 +5,7 @@ import { Popup } from '../../../popup.js';
 import { getContext } from '../../../st-context.js';
 import { escapeHtml } from '../../../utils.js';
 import { createWorldInfoEntry, loadWorldInfo, saveWorldInfo, updateWorldInfoList } from '../../../world-info.js';
+import { tr, translateStudioValidationErrors } from './i18n.js';
 import {
     appendAudit,
     buildAssetPrompt,
@@ -52,9 +53,9 @@ async function codexText(prompt) {
         }),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data?.error?.message || 'Codex generation failed.');
+    if (!response.ok) throw new Error(data?.error?.message || tr('studio.error.codexFailed'));
     const text = data?.choices?.[0]?.message?.content;
-    if (typeof text !== 'string' || !text.trim()) throw new Error('Codex returned an empty draft.');
+    if (typeof text !== 'string' || !text.trim()) throw new Error(tr('studio.error.emptyDraft'));
     return text;
 }
 
@@ -72,7 +73,7 @@ function toWorldInfo(draft) {
     const data = { entries: {} };
     for (const source of draft.lorebook.entries) {
         const entry = createWorldInfoEntry(draft.lorebook.name, data);
-        if (!entry) throw new Error('Could not allocate a lorebook entry.');
+        if (!entry) throw new Error(tr('studio.error.worldEntry'));
         Object.assign(entry, {
             key: source.keys,
             keysecondary: source.secondary_keys,
@@ -90,11 +91,11 @@ function toWorldInfo(draft) {
 
 async function importDraft() {
     const result = validateStudioDraft($('#amy-studio-draft').val());
-    if (!result.valid) throw new Error(result.errors.join('\n'));
+    if (!result.valid) throw new Error(translateStudioValidationErrors(result.errors).join('\n'));
     const draft = result.draft;
     const confirmed = await Popup.show.confirm(
-        `Import ${escapeHtml(draft.card.data.name)}?`,
-        `Create one character and a linked lorebook with ${draft.lorebook.entries.length} entries. Existing data will not be overwritten.`,
+        tr('studio.popup.importTitle', { name: escapeHtml(draft.card.data.name) }),
+        tr('studio.popup.importBody', { count: draft.lorebook.entries.length }),
     );
     if (!confirmed) return;
 
@@ -106,7 +107,7 @@ async function importDraft() {
         headers: getRequestHeaders(),
         body: JSON.stringify(characterCreatePayload(draft, worldName)),
     });
-    if (!response.ok) throw new Error(await response.text() || 'Character import failed.');
+    if (!response.ok) throw new Error(await response.text() || tr('studio.error.characterImport'));
     const avatar = await response.text();
     await getCharacters();
     const state = settings();
@@ -115,7 +116,7 @@ async function importDraft() {
     appendAudit(state, { tool: 'character_import', status: 'approved', summary: draft.card.data.name });
     persist();
     renderSettings();
-    toastr.success(`Created ${draft.card.data.name} with lorebook ${worldName}.`, 'Amy Creator Studio');
+    toastr.success(tr('studio.toast.created', { name: draft.card.data.name, world: worldName }), tr('studio.error.actionTitle'));
     return avatar;
 }
 
@@ -128,7 +129,7 @@ async function runSlash(command) {
         handleExecutionErrors: true,
         source: 'Amy Creator Studio',
     });
-    if (result?.isError) throw new Error(result.errorMessage || 'SillyTavern command failed.');
+    if (result?.isError) throw new Error(result.errorMessage || tr('studio.error.slashFailed'));
     return String(result?.pipe ?? '');
 }
 
@@ -139,14 +140,14 @@ async function generateCodexImageBlob(prompt, size, quality = 'high') {
         body: JSON.stringify({ prompt, model: currentModel(), size, quality }),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data?.error?.message || 'Image generation failed.');
+    if (!response.ok) throw new Error(data?.error?.message || tr('studio.error.imageFailed'));
     return await (await fetch(`data:image/${data.format || 'png'};base64,${data.data}`)).blob();
 }
 
 async function uploadExpressionSprite(blob, label) {
     const character = characters[this_chid];
-    if (!character?.name) throw new Error('Open a character chat before creating an expression sprite.');
-    if (!/^[a-z]+$/i.test(label)) throw new Error('Expression label must contain English letters only.');
+    if (!character?.name) throw new Error(tr('studio.error.openCharacterExpression'));
+    if (!/^[a-z]+$/i.test(label)) throw new Error(tr('studio.error.expressionLabel'));
     const form = new FormData();
     form.append('name', character.name);
     form.append('label', label.toLowerCase());
@@ -155,7 +156,7 @@ async function uploadExpressionSprite(blob, label) {
     const response = await fetch('/api/sprites/upload', {
         method: 'POST', headers: getRequestHeaders({ omitContentType: true }), body: form,
     });
-    if (!response.ok) throw new Error(await response.text() || 'Expression sprite upload failed.');
+    if (!response.ok) throw new Error(await response.text() || tr('studio.error.expressionUpload'));
     return `${character.name}/${label.toLowerCase()}.png`;
 }
 
@@ -167,7 +168,7 @@ async function uploadAndSelectBackground(blob) {
     const response = await fetch('/api/backgrounds/upload', {
         method: 'POST', headers: getRequestHeaders({ omitContentType: true }), body: form,
     });
-    if (!response.ok) throw new Error(await response.text() || 'Background upload failed.');
+    if (!response.ok) throw new Error(await response.text() || tr('studio.error.backgroundUpload'));
     const savedName = await response.text();
     await runSlash(`/bg ${quoteSlash(savedName)}`);
     return savedName;
@@ -185,34 +186,34 @@ async function generateAsset({ type, detail, requireConfirmation = false } = {})
         detail: detail ?? state.assetDetail,
     });
     if (requireConfirmation) {
-        const confirmed = await Popup.show.confirm('Generate image with Codex?', escapeHtml(prompt));
+        const confirmed = await Popup.show.confirm(tr('studio.popup.generateImageTitle'), escapeHtml(prompt));
         if (!confirmed) {
             appendAudit(state, { tool: 'image_generate', status: 'cancelled', summary: assetType });
             persist();
-            return 'Cancelled by user.';
+            return tr('studio.result.cancelled');
         }
     }
     let result;
     if (assetType === 'expression') {
         const blob = await generateCodexImageBlob(prompt, '1024x1536');
         result = await uploadExpressionSprite(blob, state.expressionLabel);
-        toastr.success(`Saved ${state.expressionLabel} expression sprite.`, 'Amy Creator Studio');
+        toastr.success(tr('studio.toast.expressionSaved', { label: state.expressionLabel }), tr('studio.error.actionTitle'));
     } else if (assetType === 'background') {
         const blob = await generateCodexImageBlob(prompt, '1536x1024');
         result = await uploadAndSelectBackground(blob);
-        toastr.success('Saved and selected the generated background.', 'Amy Creator Studio');
+        toastr.success(tr('studio.toast.backgroundSaved'), tr('studio.error.actionTitle'));
     } else {
         result = await runSlash(`/imagine source=codex quiet=false gallery=true ${quoteSlash(prompt)}`);
     }
     appendAudit(state, { tool: 'image_generate', status: 'approved', summary: `${assetType}: ${String(detail ?? state.assetDetail).slice(0, 80)}` });
     persist();
     renderAudit();
-    return result || 'Image generation completed.';
+    return result || tr('studio.result.imageCompleted');
 }
 
 async function generateAndSetPortrait() {
     const character = characters[this_chid];
-    if (!character?.avatar) throw new Error('Open a character chat before setting a portrait.');
+    if (!character?.avatar) throw new Error(tr('studio.error.openCharacterPortrait'));
     const state = settings();
     const prompt = buildAssetPrompt({
         type: 'portrait',
@@ -221,7 +222,7 @@ async function generateAndSetPortrait() {
         visualStyle: state.visualStyle,
         detail: state.assetDetail,
     });
-    const confirmed = await Popup.show.confirm(`Replace ${escapeHtml(character.name)}'s portrait?`, escapeHtml(prompt));
+    const confirmed = await Popup.show.confirm(tr('studio.popup.replacePortraitTitle', { name: escapeHtml(character.name) }), escapeHtml(prompt));
     if (!confirmed) return;
 
     const blob = await generateCodexImageBlob(prompt, '1024x1536');
@@ -233,12 +234,12 @@ async function generateAndSetPortrait() {
         headers: getRequestHeaders({ omitContentType: true }),
         body: form,
     });
-    if (!upload.ok) throw new Error(await upload.text() || 'Portrait upload failed.');
+    if (!upload.ok) throw new Error(await upload.text() || tr('studio.error.portraitUpload'));
     await getCharacters();
     appendAudit(state, { tool: 'portrait_replace', status: 'approved', summary: character.name });
     persist();
     renderAudit();
-    toastr.success(`Updated ${character.name}'s portrait.`, 'Amy Creator Studio');
+    toastr.success(tr('studio.toast.portraitUpdated', { name: character.name }), tr('studio.error.actionTitle'));
 }
 
 function transcript(windowSize) {
@@ -253,15 +254,15 @@ function transcript(windowSize) {
 async function extractMemories() {
     const state = settings();
     const text = transcript(state.memoryWindow);
-    if (!text) throw new Error('Open a chat with messages before extracting memories.');
+    if (!text) throw new Error(tr('studio.error.openChatMemory'));
     const raw = await codexText(memoryPrompt(text));
     const memories = normalizeMemoryDraft(raw);
-    if (!memories.length) throw new Error('No durable memories were found in this chat window.');
+    if (!memories.length) throw new Error(tr('studio.error.noMemories'));
     state.pendingMemories = JSON.stringify({ memories }, null, 2);
     state.lastMemoryMessageCount = getContext().chat.filter(message => !message.is_system).length;
     persist();
     renderSettings();
-    toastr.success(`Prepared ${memories.length} memories for review.`, 'Amy Creator Studio');
+    toastr.success(tr('studio.toast.memoriesPrepared', { count: memories.length }), tr('studio.error.actionTitle'));
 }
 
 async function maybePrepareAutomaticMemory() {
@@ -277,26 +278,26 @@ async function maybePrepareAutomaticMemory() {
 }
 
 async function saveMemoryEntries(memories, { confirm = true, source = 'memory_review' } = {}) {
-    if (!memories.length) throw new Error('There are no valid memories to save.');
+    if (!memories.length) throw new Error(tr('studio.error.noValidMemories'));
     const state = settings();
     if (confirm) {
         const confirmed = await Popup.show.confirm(
-            'Save memories to this chat?',
-            `Add ${memories.length} reviewed entries to the chat-bound lorebook.`,
+            tr('studio.popup.saveMemoryTitle'),
+            tr('studio.popup.saveMemoryBody', { count: memories.length }),
         );
         if (!confirmed) {
             appendAudit(state, { tool: source, status: 'cancelled', summary: `${memories.length} memories` });
             persist();
-            return 'Cancelled by user.';
+            return tr('studio.result.cancelled');
         }
     }
     const bookName = await runSlash('/getchatbook create=true');
-    if (!bookName) throw new Error('Could not create or locate the chat lorebook.');
+    if (!bookName) throw new Error(tr('studio.error.chatBook'));
     const data = await loadWorldInfo(bookName) ?? { entries: {} };
     data.entries ??= {};
     for (const memory of memories) {
         const entry = createWorldInfoEntry(bookName, data);
-        if (!entry) throw new Error('Could not allocate a memory entry.');
+        if (!entry) throw new Error(tr('studio.error.memoryEntry'));
         Object.assign(entry, {
             key: memory.keys,
             content: `[${memory.kind}; importance ${memory.importance}/5] ${memory.content}`,
@@ -313,8 +314,8 @@ async function saveMemoryEntries(memories, { confirm = true, source = 'memory_re
     appendAudit(state, { tool: source, status: 'approved', summary: `${memories.length} memories → ${bookName}` });
     persist();
     renderSettings();
-    toastr.success(`Saved ${memories.length} memories to ${bookName}.`, 'Amy Creator Studio');
-    return `Saved ${memories.length} memories.`;
+    toastr.success(tr('studio.toast.memoriesSaved', { count: memories.length, book: bookName }), tr('studio.error.actionTitle'));
+    return tr('studio.result.memoriesSaved', { count: memories.length });
 }
 
 async function savePendingMemories() {
@@ -326,8 +327,8 @@ function registerSafeTools() {
     const { ToolManager } = getContext();
     ToolManager.registerFunctionTool({
         name: 'AmyStudioRemember',
-        displayName: 'Remember in chat lorebook',
-        description: 'Propose one durable memory for this chat. The user must confirm before it is saved.',
+        displayName: tr('studio.tool.rememberName'),
+        description: tr('studio.tool.rememberDescription'),
         parameters: {
             type: 'object',
             properties: {
@@ -344,8 +345,8 @@ function registerSafeTools() {
     });
     ToolManager.registerFunctionTool({
         name: 'AmyStudioGenerateImage',
-        displayName: 'Generate a character asset',
-        description: 'Propose a portrait, expression, or background. The user must confirm before image generation.',
+        displayName: tr('studio.tool.imageName'),
+        description: tr('studio.tool.imageDescription'),
         parameters: {
             type: 'object',
             properties: {
@@ -361,9 +362,9 @@ function registerSafeTools() {
 
 function renderAudit() {
     const rows = settings().audit.slice(-20).reverse().map(entry =>
-        `${entry.time}  ${entry.status}  ${entry.tool}  ${entry.summary ?? ''}`,
+        `${entry.time}  ${tr(`studio.audit.${entry.status}`)}  ${entry.tool}  ${entry.summary ?? ''}`,
     );
-    $('#amy-studio-audit').text(rows.join('\n') || 'No actions recorded yet.');
+    $('#amy-studio-audit').text(rows.join('\n') || tr('studio.tools.noActions'));
 }
 
 function renderSettings() {
@@ -395,7 +396,7 @@ function bindAction(selector, action) {
             await action();
         } catch (error) {
             console.error('[amy-studio]', error);
-            toastr.error(error.message, 'Amy Creator Studio');
+            toastr.error(error.message, tr('studio.error.actionTitle'));
         } finally {
             setBusy(button, false);
         }
@@ -407,43 +408,43 @@ function createPanel() {
     const panel = $(`
         <div id="amy-creator-studio" class="amy-studio inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>✨ Amy Creator Studio</b>
+                <b data-i18n="amyCreatorStudio.studio.title">✨ Amy Creator Studio</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <small>Codex-powered character authoring, consistent visual assets, reviewed memory, and confirmation-gated tools.</small>
+                <small data-i18n="amyCreatorStudio.studio.subtitle">Codex-powered character authoring, consistent visual assets, reviewed memory, and confirmation-gated tools.</small>
                 <div class="amy-studio-tabs flex-container">
-                    <button class="menu_button amy-studio-tab" data-tab="character">Character</button>
-                    <button class="menu_button amy-studio-tab" data-tab="assets">Assets</button>
-                    <button class="menu_button amy-studio-tab" data-tab="memory">Memory</button>
-                    <button class="menu_button amy-studio-tab" data-tab="tools">Safe tools</button>
+                    <button class="menu_button amy-studio-tab" data-tab="character" data-i18n="amyCreatorStudio.studio.tab.character">Character</button>
+                    <button class="menu_button amy-studio-tab" data-tab="assets" data-i18n="amyCreatorStudio.studio.tab.assets">Assets</button>
+                    <button class="menu_button amy-studio-tab" data-tab="memory" data-i18n="amyCreatorStudio.studio.tab.memory">Memory</button>
+                    <button class="menu_button amy-studio-tab" data-tab="tools" data-i18n="amyCreatorStudio.studio.tab.tools">Safe tools</button>
                 </div>
                 <section data-amy-tab="character">
-                    <label>Character idea<textarea id="amy-studio-idea" class="text_pole" rows="4" placeholder="Describe the character, relationship, setting, tone, and boundaries."></textarea></label>
-                    <div class="flex-container"><button id="amy-studio-generate" class="menu_button">Generate draft</button><button id="amy-studio-validate" class="menu_button">Validate</button><button id="amy-studio-import" class="menu_button">Import character + lorebook</button></div>
-                    <label>Reviewable Character Card V2 draft<textarea id="amy-studio-draft" class="text_pole monospace" rows="14"></textarea></label>
+                    <label><span data-i18n="amyCreatorStudio.studio.character.idea">Character idea</span><textarea id="amy-studio-idea" class="text_pole" rows="4" placeholder="Describe the character, relationship, setting, tone, and boundaries." data-i18n="[placeholder]amyCreatorStudio.studio.character.ideaPlaceholder"></textarea></label>
+                    <div class="flex-container"><button id="amy-studio-generate" class="menu_button" data-i18n="amyCreatorStudio.studio.character.generate">Generate draft</button><button id="amy-studio-validate" class="menu_button" data-i18n="amyCreatorStudio.studio.character.validate">Validate</button><button id="amy-studio-import" class="menu_button" data-i18n="amyCreatorStudio.studio.character.import">Import character + lorebook</button></div>
+                    <label><span data-i18n="amyCreatorStudio.studio.character.draft">Reviewable Character Card V2 draft</span><textarea id="amy-studio-draft" class="text_pole monospace" rows="14"></textarea></label>
                 </section>
                 <section data-amy-tab="assets" class="displayNone">
-                    <label>Visual identity anchor<textarea id="amy-studio-visual-anchor" class="text_pole" rows="4" placeholder="Stable face, hair, body, clothing, colors, signature details."></textarea></label>
-                    <label>Style bible<textarea id="amy-studio-visual-style" class="text_pole" rows="3"></textarea></label>
-                    <label>Asset type<select id="amy-studio-asset-type" class="text_pole"><option value="portrait">Portrait</option><option value="expression">Expression</option><option value="background">Background</option></select></label>
-                    <label>Expression label<select id="amy-studio-expression-label" class="text_pole"><option value="neutral">neutral</option><option value="joy">joy</option><option value="sadness">sadness</option><option value="anger">anger</option><option value="surprise">surprise</option><option value="fear">fear</option></select></label>
-                    <label>Scene / expression detail<textarea id="amy-studio-asset-detail" class="text_pole" rows="3"></textarea></label>
-                    <div class="flex-container"><button id="amy-studio-asset-generate" class="menu_button">Generate selected asset</button><button id="amy-studio-portrait-set" class="menu_button">Generate portrait + set avatar</button></div>
-                    <small>Portraits go to chat/gallery; expressions are installed as sprites; backgrounds are uploaded and selected immediately.</small>
+                    <label><span data-i18n="amyCreatorStudio.studio.assets.anchor">Visual identity anchor</span><textarea id="amy-studio-visual-anchor" class="text_pole" rows="4" placeholder="Stable face, hair, body, clothing, colors, signature details." data-i18n="[placeholder]amyCreatorStudio.studio.assets.anchorPlaceholder"></textarea></label>
+                    <label><span data-i18n="amyCreatorStudio.studio.assets.style">Style bible</span><textarea id="amy-studio-visual-style" class="text_pole" rows="3"></textarea></label>
+                    <label><span data-i18n="amyCreatorStudio.studio.assets.type">Asset type</span><select id="amy-studio-asset-type" class="text_pole"><option value="portrait" data-i18n="amyCreatorStudio.studio.assets.portrait">Portrait</option><option value="expression" data-i18n="amyCreatorStudio.studio.assets.expression">Expression</option><option value="background" data-i18n="amyCreatorStudio.studio.assets.background">Background</option></select></label>
+                    <label><span data-i18n="amyCreatorStudio.studio.assets.expressionLabel">Expression label</span><select id="amy-studio-expression-label" class="text_pole"><option value="neutral" data-i18n="amyCreatorStudio.studio.assets.expression.neutral">neutral</option><option value="joy" data-i18n="amyCreatorStudio.studio.assets.expression.joy">joy</option><option value="sadness" data-i18n="amyCreatorStudio.studio.assets.expression.sadness">sadness</option><option value="anger" data-i18n="amyCreatorStudio.studio.assets.expression.anger">anger</option><option value="surprise" data-i18n="amyCreatorStudio.studio.assets.expression.surprise">surprise</option><option value="fear" data-i18n="amyCreatorStudio.studio.assets.expression.fear">fear</option></select></label>
+                    <label><span data-i18n="amyCreatorStudio.studio.assets.detail">Scene / expression detail</span><textarea id="amy-studio-asset-detail" class="text_pole" rows="3"></textarea></label>
+                    <div class="flex-container"><button id="amy-studio-asset-generate" class="menu_button" data-i18n="amyCreatorStudio.studio.assets.generate">Generate selected asset</button><button id="amy-studio-portrait-set" class="menu_button" data-i18n="amyCreatorStudio.studio.assets.setPortrait">Generate portrait + set avatar</button></div>
+                    <small data-i18n="amyCreatorStudio.studio.assets.note">Portraits go to chat/gallery; expressions are installed as sprites; backgrounds are uploaded and selected immediately.</small>
                 </section>
                 <section data-amy-tab="memory" class="displayNone">
-                    <label>Recent messages to inspect<input id="amy-studio-memory-window" class="text_pole" type="number" min="4" max="100"></label>
-                    <label class="checkbox_label"><input id="amy-studio-auto-memory" type="checkbox"><span>Automatically prepare a review draft</span></label>
-                    <label>Prepare after this many new messages<input id="amy-studio-auto-memory-every" class="text_pole" type="number" min="4" max="100"></label>
-                    <div class="flex-container"><button id="amy-studio-memory-extract" class="menu_button">Extract memory draft</button><button id="amy-studio-memory-save" class="menu_button">Save reviewed memories</button></div>
-                    <label>Reviewable memory draft<textarea id="amy-studio-memory-draft" class="text_pole monospace" rows="12"></textarea></label>
-                    <small>Memories are atomic, stored in the current chat lorebook, and marked for vector retrieval. Nothing is written until Save is confirmed.</small>
+                    <label><span data-i18n="amyCreatorStudio.studio.memory.window">Recent messages to inspect</span><input id="amy-studio-memory-window" class="text_pole" type="number" min="4" max="100"></label>
+                    <label class="checkbox_label"><input id="amy-studio-auto-memory" type="checkbox"><span data-i18n="amyCreatorStudio.studio.memory.auto">Automatically prepare a review draft</span></label>
+                    <label><span data-i18n="amyCreatorStudio.studio.memory.every">Prepare after this many new messages</span><input id="amy-studio-auto-memory-every" class="text_pole" type="number" min="4" max="100"></label>
+                    <div class="flex-container"><button id="amy-studio-memory-extract" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.extract">Extract memory draft</button><button id="amy-studio-memory-save" class="menu_button" data-i18n="amyCreatorStudio.studio.memory.save">Save reviewed memories</button></div>
+                    <label><span data-i18n="amyCreatorStudio.studio.memory.draft">Reviewable memory draft</span><textarea id="amy-studio-memory-draft" class="text_pole monospace" rows="12"></textarea></label>
+                    <small data-i18n="amyCreatorStudio.studio.memory.note">Memories are atomic, stored in the current chat lorebook, and marked for vector retrieval. Nothing is written until Save is confirmed.</small>
                 </section>
                 <section data-amy-tab="tools" class="displayNone">
-                    <label class="checkbox_label"><input id="amy-studio-safe-tools" type="checkbox"><span>Allow Codex to propose Amy Studio tools</span></label>
-                    <small>Enabling this also enables SillyTavern function calling. Only AmyStudioRemember and AmyStudioGenerateImage are exposed. Both require an on-screen confirmation before a write or paid image request. Other SillyTavern and third-party tools remain blocked for this provider.</small>
-                    <h4>Local audit trail</h4><pre id="amy-studio-audit" class="amy-studio-audit"></pre>
+                    <label class="checkbox_label"><input id="amy-studio-safe-tools" type="checkbox"><span data-i18n="amyCreatorStudio.studio.tools.enable">Allow Codex to propose Amy Studio tools</span></label>
+                    <small data-i18n="amyCreatorStudio.studio.tools.note">Enabling this also enables SillyTavern function calling. Only AmyStudioRemember and AmyStudioGenerateImage are exposed. Both require an on-screen confirmation before a write or paid image request. Other SillyTavern and third-party tools remain blocked for this provider.</small>
+                    <h4 data-i18n="amyCreatorStudio.studio.tools.audit">Local audit trail</h4><pre id="amy-studio-audit" class="amy-studio-audit"></pre>
                 </section>
             </div>
         </div>`);
@@ -484,28 +485,28 @@ function createPanel() {
             $('#openai_function_calling').prop('checked', true);
         }
         persist();
-        toastr.info(enabled ? 'Safe tools enabled. Actions still require confirmation.' : 'Codex tools disabled.', 'Amy Creator Studio');
+        toastr.info(enabled ? tr('studio.tools.enabled') : tr('studio.tools.disabled'), tr('studio.error.actionTitle'));
     });
     bindAction('#amy-studio-generate', async () => {
         const state = settings();
-        if (!state.idea.trim()) throw new Error('Describe the character first.');
+        if (!state.idea.trim()) throw new Error(tr('studio.error.describeCharacter'));
         const raw = await codexText(creatorPrompt(state.idea));
         const result = validateStudioDraft(raw);
-        if (!result.valid) throw new Error(`Generated draft failed validation:\n${result.errors.join('\n')}`);
+        if (!result.valid) throw new Error(tr('studio.error.generatedValidation', { errors: translateStudioValidationErrors(result.errors).join('\n') }));
         state.draft = JSON.stringify(result.draft, null, 2);
         state.visualAnchor = result.draft.visual.anchor;
         state.visualStyle = result.draft.visual.style || state.visualStyle;
         persist();
         renderSettings();
-        toastr.success('Draft generated and validated. Review it before importing.', 'Amy Creator Studio');
+        toastr.success(tr('studio.toast.draftGenerated'), tr('studio.error.actionTitle'));
     });
     bindAction('#amy-studio-validate', async () => {
         const result = validateStudioDraft($('#amy-studio-draft').val());
-        if (!result.valid) throw new Error(result.errors.join('\n'));
+        if (!result.valid) throw new Error(translateStudioValidationErrors(result.errors).join('\n'));
         settings().draft = JSON.stringify(result.draft, null, 2);
         persist();
         renderSettings();
-        toastr.success(`Valid Character Card V2 with ${result.draft.lorebook.entries.length} lore entries.`, 'Amy Creator Studio');
+        toastr.success(tr('studio.toast.draftValid', { count: result.draft.lorebook.entries.length }), tr('studio.error.actionTitle'));
     });
     bindAction('#amy-studio-import', importDraft);
     bindAction('#amy-studio-asset-generate', () => generateAsset());
