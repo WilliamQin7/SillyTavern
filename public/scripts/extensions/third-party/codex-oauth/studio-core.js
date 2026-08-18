@@ -1,6 +1,8 @@
 export const STUDIO_SCHEMA = 'amy_creator_studio_v1';
 export const STORY_STATE_SCHEMA = 'amy_story_state_v1';
 export const STORY_STATE_ENTRY_COMMENT = 'Amy Story State v1';
+export const STORY_PLAN_SCHEMA = 'amy_story_plan_v1';
+export const STORY_PLAN_ENTRY_COMMENT = 'Amy Active Story Plan v1';
 export const SAFE_TOOL_NAMES = Object.freeze(['AmyStudioRemember', 'AmyStudioGenerateImage']);
 
 const REQUIRED_CARD_FIELDS = Object.freeze([
@@ -353,6 +355,113 @@ export function storyStateToLoreContent(value) {
     return sections.filter(Boolean).join('\n');
 }
 
+function uniquePlanId(value, fallback, used) {
+    const base = boundedString(value, 80)
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || fallback;
+    let candidate = base;
+    for (let suffix = 2; used.has(candidate); suffix++) candidate = `${base}-${suffix}`;
+    used.add(candidate);
+    return candidate;
+}
+
+function planStrings(value, limit = 20) {
+    const items = Array.isArray(value) ? stringArray(value) : [string(value)].filter(Boolean);
+    return items.map(item => item.slice(0, 500)).slice(0, limit);
+}
+
+export function normalizeStoryPlan(value) {
+    let input;
+    try {
+        input = typeof value === 'string' ? extractJsonObject(value) : value;
+    } catch {
+        return null;
+    }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+    const chapterIds = new Set();
+    const chapters = (Array.isArray(input.chapters) ? input.chapters : [])
+        .filter(chapter => chapter && typeof chapter === 'object' && !Array.isArray(chapter))
+        .slice(0, 100).map((chapter, chapterIndex) => {
+            const chapterId = uniquePlanId(chapter?.id, `chapter-${chapterIndex + 1}`, chapterIds);
+            const sceneIds = new Set();
+            const scenes = (Array.isArray(chapter?.scenes) ? chapter.scenes : [])
+                .filter(scene => scene && typeof scene === 'object' && !Array.isArray(scene))
+                .slice(0, 100).map((scene, sceneIndex) => ({
+                    id: uniquePlanId(scene?.id, `${chapterId}-scene-${sceneIndex + 1}`, sceneIds),
+                    title: boundedString(scene?.title, 200) || `Scene ${sceneIndex + 1}`,
+                    summary: boundedString(scene?.summary, 2000),
+                    goals: planStrings(scene?.goals),
+                    constraints: planStrings(scene?.constraints),
+                }));
+            return {
+                id: chapterId,
+                title: boundedString(chapter?.title, 200) || `Chapter ${chapterIndex + 1}`,
+                summary: boundedString(chapter?.summary, 3000),
+                goals: planStrings(chapter?.goals, 50),
+                constraints: planStrings(chapter?.constraints, 50),
+                scenes,
+            };
+        });
+    if (!chapters.length) return null;
+    return {
+        schema: STORY_PLAN_SCHEMA,
+        title: boundedString(input.title, 300) || 'Untitled story',
+        premise: boundedString(input.premise, 4000),
+        styleGuide: planStrings(input.styleGuide ?? input.style_guide, 50),
+        chapters,
+    };
+}
+
+export function normalizeStoryPlanProgress(value, planValue) {
+    const plan = normalizeStoryPlan(planValue);
+    if (!plan) return { active: false, chapterId: '', sceneId: '' };
+    const input = value && typeof value === 'object' ? value : {};
+    const chapter = plan.chapters.find(item => item.id === string(input.chapterId)) ?? plan.chapters[0];
+    const scene = chapter.scenes.find(item => item.id === string(input.sceneId)) ?? chapter.scenes[0] ?? null;
+    return {
+        active: input.active === true,
+        chapterId: chapter.id,
+        sceneId: scene?.id ?? '',
+    };
+}
+
+export function activeStoryPlanContext(planValue, progressValue) {
+    const plan = normalizeStoryPlan(planValue);
+    if (!plan) return null;
+    const progress = normalizeStoryPlanProgress(progressValue, plan);
+    const chapter = plan.chapters.find(item => item.id === progress.chapterId);
+    if (!chapter) return null;
+    const scene = chapter.scenes.find(item => item.id === progress.sceneId) ?? null;
+    return { plan, progress, chapter, scene };
+}
+
+function storyPlanFocusList(label, values) {
+    const items = planStrings(values, 6).map(item => item.slice(0, 240));
+    return items.length ? `${label}: ${items.join('; ')}` : '';
+}
+
+export function storyPlanToLoreContent(planValue, progressValue) {
+    const context = activeStoryPlanContext(planValue, progressValue);
+    if (!context?.progress.active) return '';
+    const { plan, chapter, scene } = context;
+    const sections = [
+        'Active story plan (author guidance; not established canon):',
+        `Story: ${plan.title}`,
+        storyPlanFocusList('Style guidance', plan.styleGuide),
+        `Current chapter — ${chapter.title}`,
+        chapter.summary && `Chapter intent: ${chapter.summary.slice(0, 1500)}`,
+        storyPlanFocusList('Chapter goals', chapter.goals),
+        storyPlanFocusList('Chapter constraints', chapter.constraints),
+        scene && `Current scene — ${scene.title}`,
+        scene?.summary && `Scene intent: ${scene.summary.slice(0, 1200)}`,
+        storyPlanFocusList('Scene goals', scene?.goals),
+        storyPlanFocusList('Scene constraints', scene?.constraints),
+        'Treat planned events as intentions, never as events that already occurred. Follow reviewed canon and current story state when they conflict.',
+    ];
+    return sections.filter(Boolean).join('\n');
+}
+
 export function memorySourceMatchesChat(source, chatId) {
     const expected = normalizeMemorySource(source).chatId;
     return Boolean(expected && expected === string(chatId));
@@ -402,6 +511,10 @@ export function creatorPrompt(idea) {
 
 export function memoryPrompt(messages) {
     return `Extract durable roleplay memories from the transcript below. Keep atomic facts separate from events and changing state. Do not invent information. Return JSON only as {"memories":[{"title":"","content":"standalone third-person memory","keys":["trigger"],"kind":"fact|event|relationship|goal|state","importance":1}]} with at most 8 items. Omit trivial dialogue and transient wording.\n\nTRANSCRIPT\n${String(messages)}`;
+}
+
+export function storyPlanPrompt(outline) {
+    return `Convert the supplied novel outline into a compact, reviewable writing plan. Return JSON only as {"schema":"${STORY_PLAN_SCHEMA}","title":"","premise":"","styleGuide":[],"chapters":[{"id":"chapter-1","title":"","summary":"","goals":[],"constraints":[],"scenes":[{"id":"chapter-1-scene-1","title":"","summary":"","goals":[],"constraints":[]}]}]}. Preserve the author's intended chapter order and meaning. Do not invent new plot turns, resolutions, facts, or scenes. Use stable lowercase ASCII IDs. Put events that must happen in goals and events that must not happen yet in constraints. Empty scenes are allowed when the outline only specifies chapter-level direction. Do not include markdown fences.\n\nOUTLINE\n${String(outline)}`;
 }
 
 export function sceneMemoryPrompt(messages, currentStoryState = null) {

@@ -7,6 +7,7 @@ import { escapeHtml } from '../../../utils.js';
 import { createWorldInfoEntry, loadWorldInfo, saveWorldInfo, updateWorldInfoList } from '../../../world-info.js';
 import { tr, translateStudioValidationErrors } from './i18n.js';
 import {
+    activeStoryPlanContext,
     appendAudit,
     buildAssetPrompt,
     characterCreatePayload,
@@ -15,10 +16,15 @@ import {
     memoryPrompt,
     normalizeMemoryEnvelope,
     normalizeMemoryDraft,
+    normalizeStoryPlan,
+    normalizeStoryPlanProgress,
     normalizeStoryState,
     normalizeStudioSettings,
     partitionNewMemories,
     sceneMemoryPrompt,
+    STORY_PLAN_ENTRY_COMMENT,
+    storyPlanPrompt,
+    storyPlanToLoreContent,
     STORY_STATE_ENTRY_COMMENT,
     storyStateToLoreContent,
     validateStudioDraft,
@@ -41,11 +47,16 @@ function persist() {
 function chatState() {
     const input = chat_metadata[CHAT_STATE_KEY];
     const state = input && typeof input === 'object' ? input : {};
+    const storyPlan = normalizeStoryPlan(state.storyPlan);
     chat_metadata[CHAT_STATE_KEY] = {
         ...state,
         pendingMemories: typeof state.pendingMemories === 'string' ? state.pendingMemories : '',
+        pendingPlanOutline: typeof state.pendingPlanOutline === 'string' ? state.pendingPlanOutline : '',
+        pendingPlan: typeof state.pendingPlan === 'string' ? state.pendingPlan : '',
         lastMemoryMessageCount: Math.max(0, Number(state.lastMemoryMessageCount) || 0),
         storyState: normalizeStoryState(state.storyState),
+        storyPlan,
+        storyPlanProgress: normalizeStoryPlanProgress(state.storyPlanProgress, storyPlan),
     };
     return chat_metadata[CHAT_STATE_KEY];
 }
@@ -322,6 +333,141 @@ async function closeScene() {
     await prepareMemoryDraft(sceneMemoryPrompt, 'studio.toast.scenePrepared', { requireStoryState: true });
 }
 
+async function generateStoryPlanDraft() {
+    const outline = String($('#amy-studio-plan-outline').val() ?? '').trim();
+    if (!outline) throw new Error(tr('studio.error.planOutline'));
+    const source = { chatId: String(getCurrentChatId() ?? '') };
+    if (!source.chatId) throw new Error(tr('studio.error.openChatPlan'));
+    let plan = normalizeStoryPlan(outline);
+    if (!plan) plan = normalizeStoryPlan(await codexText(storyPlanPrompt(outline)));
+    assertMemorySource(source);
+    if (!plan) throw new Error(tr('studio.error.planInvalid'));
+    const state = chatState();
+    state.pendingPlan = JSON.stringify(plan, null, 2);
+    await persistChat({ immediate: true });
+    renderSettings();
+    toastr.success(tr('studio.toast.planPrepared', { count: plan.chapters.length }), tr('studio.error.actionTitle'));
+}
+
+async function syncActiveStoryPlan(plan, progress, source) {
+    const content = storyPlanToLoreContent(plan, progress);
+    const bookName = await runSlash(`/getchatbook create=${content ? 'true' : 'false'}`);
+    assertMemorySource(source);
+    if (!bookName) return;
+    const data = await loadWorldInfo(bookName) ?? { entries: {} };
+    assertMemorySource(source);
+    data.entries ??= {};
+    const existing = Object.entries(data.entries).find(([, entry]) => entry?.comment === STORY_PLAN_ENTRY_COMMENT);
+    if (!content) {
+        if (existing) {
+            delete data.entries[existing[0]];
+            await saveWorldInfo(bookName, data, true);
+        }
+        assertMemorySource(source);
+        return;
+    }
+    const entry = existing?.[1] ?? createWorldInfoEntry(bookName, data);
+    if (!entry) throw new Error(tr('studio.error.memoryEntry'));
+    Object.assign(entry, {
+        key: [],
+        content,
+        comment: STORY_PLAN_ENTRY_COMMENT,
+        constant: true,
+        vectorized: false,
+        order: 950,
+        position: 0,
+        disable: false,
+    });
+    assertMemorySource(source);
+    await saveWorldInfo(bookName, data, true);
+    assertMemorySource(source);
+}
+
+async function saveReviewedStoryPlan() {
+    const plan = normalizeStoryPlan($('#amy-studio-plan-draft').val());
+    if (!plan) throw new Error(tr('studio.error.planInvalid'));
+    const source = { chatId: String(getCurrentChatId() ?? '') };
+    if (!source.chatId) throw new Error(tr('studio.error.openChatPlan'));
+    const currentProgress = normalizeStoryPlanProgress(chatState().storyPlanProgress, plan);
+    const bodyKey = chat_metadata.main_chat && currentProgress.active
+        ? 'studio.popup.savePlanBranchBody'
+        : 'studio.popup.savePlanBody';
+    const confirmed = await Popup.show.confirm(
+        tr('studio.popup.savePlanTitle'),
+        tr(bodyKey, { count: plan.chapters.length }),
+    );
+    if (!confirmed) return;
+    assertMemorySource(source);
+    const state = chatState();
+    const progress = normalizeStoryPlanProgress(state.storyPlanProgress, plan);
+    if (progress.active) await syncActiveStoryPlan(plan, progress, source);
+    assertMemorySource(source);
+    state.storyPlan = plan;
+    state.storyPlanProgress = progress;
+    state.pendingPlan = JSON.stringify(plan, null, 2);
+    state.pendingPlanOutline = '';
+    await persistChat({ immediate: true });
+    appendAudit(settings(), { tool: 'story_plan_save', status: 'approved', summary: `${plan.chapters.length} chapters` });
+    persist();
+    renderSettings();
+    toastr.success(tr('studio.toast.planSaved', { count: plan.chapters.length }), tr('studio.error.actionTitle'));
+}
+
+function selectedStoryPlanProgress(active) {
+    return {
+        active,
+        chapterId: String($('#amy-studio-plan-chapter').val() ?? ''),
+        sceneId: String($('#amy-studio-plan-scene').val() ?? ''),
+    };
+}
+
+async function activateStoryPlan() {
+    const source = { chatId: String(getCurrentChatId() ?? '') };
+    if (!source.chatId) throw new Error(tr('studio.error.openChatPlan'));
+    const state = chatState();
+    if (!state.storyPlan) throw new Error(tr('studio.error.planMissing'));
+    const progress = normalizeStoryPlanProgress(selectedStoryPlanProgress(true), state.storyPlan);
+    const context = activeStoryPlanContext(state.storyPlan, progress);
+    const bodyKey = chat_metadata.main_chat ? 'studio.popup.activatePlanBranchBody' : 'studio.popup.activatePlanBody';
+    const confirmed = await Popup.show.confirm(
+        tr('studio.popup.activatePlanTitle'),
+        tr(bodyKey, { chapter: context.chapter.title, scene: context.scene?.title ?? tr('studio.plan.noScene') }),
+    );
+    if (!confirmed) return;
+    await syncActiveStoryPlan(state.storyPlan, progress, source);
+    assertMemorySource(source);
+    state.storyPlanProgress = progress;
+    await persistChat({ immediate: true });
+    appendAudit(settings(), { tool: 'story_plan_activate', status: 'approved', summary: `${progress.chapterId}/${progress.sceneId || '-'}` });
+    persist();
+    renderSettings();
+    toastr.success(tr('studio.toast.planActivated', { chapter: context.chapter.title, scene: context.scene?.title ?? tr('studio.plan.noScene') }), tr('studio.error.actionTitle'));
+}
+
+async function deactivateStoryPlan() {
+    const source = { chatId: String(getCurrentChatId() ?? '') };
+    if (!source.chatId) throw new Error(tr('studio.error.openChatPlan'));
+    const state = chatState();
+    if (!state.storyPlanProgress.active) {
+        toastr.info(tr('studio.toast.planAlreadyInactive'), tr('studio.error.actionTitle'));
+        return;
+    }
+    const bodyKey = chat_metadata.main_chat
+        ? 'studio.popup.deactivatePlanBranchBody'
+        : 'studio.popup.deactivatePlanBody';
+    const confirmed = await Popup.show.confirm(tr('studio.popup.deactivatePlanTitle'), tr(bodyKey));
+    if (!confirmed) return;
+    const progress = { ...state.storyPlanProgress, active: false };
+    await syncActiveStoryPlan(state.storyPlan, progress, source);
+    assertMemorySource(source);
+    state.storyPlanProgress = progress;
+    await persistChat({ immediate: true });
+    appendAudit(settings(), { tool: 'story_plan_deactivate', status: 'approved', summary: progress.chapterId });
+    persist();
+    renderSettings();
+    toastr.success(tr('studio.toast.planDeactivated'), tr('studio.error.actionTitle'));
+}
+
 async function createCheckpoint() {
     if (!getCurrentChatId() || !getContext().chat.length) throw new Error(tr('studio.error.openChatCheckpoint'));
     const confirmed = await Popup.show.confirm(
@@ -492,6 +638,40 @@ function renderAudit() {
     $('#amy-studio-audit').text(rows.join('\n') || tr('studio.tools.noActions'));
 }
 
+function populateStoryPlanScenes(chapter) {
+    const sceneSelect = $('#amy-studio-plan-scene').empty();
+    if (!chapter?.scenes.length) {
+        sceneSelect.append($('<option>').val('').text(tr('studio.plan.noScene'))).prop('disabled', true);
+        return;
+    }
+    sceneSelect.prop('disabled', false);
+    for (const scene of chapter.scenes) sceneSelect.append($('<option>').val(scene.id).text(scene.title));
+}
+
+function renderStoryPlanSelectors() {
+    const state = chatState();
+    const plan = state.storyPlan;
+    const progress = normalizeStoryPlanProgress(state.storyPlanProgress, plan);
+    const chapterSelect = $('#amy-studio-plan-chapter').empty();
+    const sceneSelect = $('#amy-studio-plan-scene').empty();
+    if (!plan) {
+        chapterSelect.append($('<option>').val('').text(tr('studio.plan.noPlan'))).prop('disabled', true);
+        sceneSelect.append($('<option>').val('').text(tr('studio.plan.noScene'))).prop('disabled', true);
+        $('#amy-studio-plan-status').text(tr('studio.plan.inactive'));
+        return;
+    }
+    chapterSelect.prop('disabled', false);
+    for (const chapter of plan.chapters) chapterSelect.append($('<option>').val(chapter.id).text(chapter.title));
+    chapterSelect.val(progress.chapterId);
+    const chapter = plan.chapters.find(item => item.id === progress.chapterId) ?? plan.chapters[0];
+    populateStoryPlanScenes(chapter);
+    if (chapter.scenes.length) $('#amy-studio-plan-scene').val(progress.sceneId || chapter.scenes[0].id);
+    const context = activeStoryPlanContext(plan, progress);
+    $('#amy-studio-plan-status').text(progress.active
+        ? tr('studio.plan.active', { chapter: context.chapter.title, scene: context.scene?.title ?? tr('studio.plan.noScene') })
+        : tr('studio.plan.inactive'));
+}
+
 function renderSettings() {
     const state = settings();
     const memoryState = chatState();
@@ -506,6 +686,8 @@ function renderSettings() {
     $('#amy-studio-auto-memory').prop('checked', state.autoMemoryDraft);
     $('#amy-studio-auto-memory-every').val(state.autoMemoryEvery);
     $('#amy-studio-memory-draft').val(memoryState.pendingMemories);
+    $('#amy-studio-plan-outline').val(memoryState.pendingPlanOutline);
+    $('#amy-studio-plan-draft').val(memoryState.pendingPlan || (memoryState.storyPlan ? JSON.stringify(memoryState.storyPlan, null, 2) : ''));
     $('#amy-studio-story-state').text(memoryState.storyState
         ? JSON.stringify(memoryState.storyState, null, 2)
         : tr('studio.memory.noStoryState'));
@@ -519,6 +701,7 @@ function renderSettings() {
         ? tr('studio.memory.source', { chat: source.chatId, start: source.startMessageId ?? '-', end: source.endMessageId ?? '-' })
         : tr('studio.memory.noSource'));
     $('#amy-studio-safe-tools').prop('checked', state.enableSafeTools);
+    renderStoryPlanSelectors();
     renderAudit();
 }
 
@@ -554,6 +737,7 @@ function createPanel() {
                 <div class="amy-studio-tabs flex-container">
                     <button class="menu_button amy-studio-tab" data-tab="character" data-i18n="amyCreatorStudio.studio.tab.character">Character</button>
                     <button class="menu_button amy-studio-tab" data-tab="assets" data-i18n="amyCreatorStudio.studio.tab.assets">Assets</button>
+                    <button class="menu_button amy-studio-tab" data-tab="plan" data-i18n="amyCreatorStudio.studio.tab.plan">Story plan</button>
                     <button class="menu_button amy-studio-tab" data-tab="memory" data-i18n="amyCreatorStudio.studio.tab.memory">Memory</button>
                     <button class="menu_button amy-studio-tab" data-tab="tools" data-i18n="amyCreatorStudio.studio.tab.tools">Safe tools</button>
                 </div>
@@ -570,6 +754,16 @@ function createPanel() {
                     <label><span data-i18n="amyCreatorStudio.studio.assets.detail">Scene / expression detail</span><textarea id="amy-studio-asset-detail" class="text_pole" rows="3"></textarea></label>
                     <div class="flex-container"><button id="amy-studio-asset-generate" class="menu_button" data-i18n="amyCreatorStudio.studio.assets.generate">Generate selected asset</button><button id="amy-studio-portrait-set" class="menu_button" data-i18n="amyCreatorStudio.studio.assets.setPortrait">Generate portrait + set avatar</button></div>
                     <small data-i18n="amyCreatorStudio.studio.assets.note">Portraits go to chat/gallery; expressions are installed as sprites; backgrounds are uploaded and selected immediately.</small>
+                </section>
+                <section data-amy-tab="plan" class="displayNone">
+                    <label><span data-i18n="amyCreatorStudio.studio.plan.outline">Existing outline (Markdown or Story Plan JSON)</span><textarea id="amy-studio-plan-outline" class="text_pole monospace" rows="8" placeholder="Paste the novel premise and chapter outline here." data-i18n="[placeholder]amyCreatorStudio.studio.plan.outlinePlaceholder"></textarea></label>
+                    <div class="flex-container"><button id="amy-studio-plan-generate" class="menu_button" data-i18n="amyCreatorStudio.studio.plan.generate">Prepare structured plan</button><button id="amy-studio-plan-save" class="menu_button" data-i18n="amyCreatorStudio.studio.plan.save">Save reviewed plan</button></div>
+                    <label><span data-i18n="amyCreatorStudio.studio.plan.draft">Reviewable Story Plan draft</span><textarea id="amy-studio-plan-draft" class="text_pole monospace" rows="14"></textarea></label>
+                    <label><span data-i18n="amyCreatorStudio.studio.plan.chapter">Current chapter</span><select id="amy-studio-plan-chapter" class="text_pole"></select></label>
+                    <label><span data-i18n="amyCreatorStudio.studio.plan.scene">Current scene</span><select id="amy-studio-plan-scene" class="text_pole"></select></label>
+                    <div class="flex-container"><button id="amy-studio-plan-activate" class="menu_button" data-i18n="amyCreatorStudio.studio.plan.activate">Activate selected focus</button><button id="amy-studio-plan-deactivate" class="menu_button" data-i18n="amyCreatorStudio.studio.plan.deactivate">Deactivate plan</button></div>
+                    <small id="amy-studio-plan-status"></small>
+                    <small data-i18n="amyCreatorStudio.studio.plan.note">Only the selected chapter and scene are added to the writing context. Future chapters stay hidden, and the plan is never treated as established canon.</small>
                 </section>
                 <section data-amy-tab="memory" class="displayNone">
                     <label><span data-i18n="amyCreatorStudio.studio.memory.window">Recent messages to inspect</span><input id="amy-studio-memory-window" class="text_pole" type="number" min="4" max="100"></label>
@@ -610,6 +804,19 @@ function createPanel() {
     $('#amy-studio-memory-draft').on('input', function () {
         chatState().pendingMemories = String($(this).val() ?? '');
         persistChat();
+    });
+    $('#amy-studio-plan-outline').on('input', function () {
+        chatState().pendingPlanOutline = String($(this).val() ?? '');
+        persistChat();
+    });
+    $('#amy-studio-plan-draft').on('input', function () {
+        chatState().pendingPlan = String($(this).val() ?? '');
+        persistChat();
+    });
+    $('#amy-studio-plan-chapter').on('change', function () {
+        const plan = chatState().storyPlan;
+        const chapter = plan?.chapters.find(item => item.id === String($(this).val()));
+        populateStoryPlanScenes(chapter);
     });
     $('#amy-studio-asset-type').on('change', function () { settings().assetType = String($(this).val()); persist(); });
     $('#amy-studio-expression-label').on('change', function () { settings().expressionLabel = String($(this).val()); persist(); });
@@ -660,6 +867,10 @@ function createPanel() {
     bindAction('#amy-studio-scene-close', closeScene);
     bindAction('#amy-studio-memory-save', savePendingMemories);
     bindAction('#amy-studio-checkpoint', createCheckpoint);
+    bindAction('#amy-studio-plan-generate', generateStoryPlanDraft);
+    bindAction('#amy-studio-plan-save', saveReviewedStoryPlan);
+    bindAction('#amy-studio-plan-activate', activateStoryPlan);
+    bindAction('#amy-studio-plan-deactivate', deactivateStoryPlan);
     renderSettings();
 }
 

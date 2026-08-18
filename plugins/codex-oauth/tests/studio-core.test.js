@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { TavernCardValidator } from '../../../src/validator/TavernCardValidator.js';
 import {
+    activeStoryPlanContext,
     buildAssetPrompt,
     characterCreatePayload,
     extractJsonObject,
@@ -10,9 +11,13 @@ import {
     memorySourceMatchesChat,
     normalizeMemoryEnvelope,
     normalizeMemoryDraft,
+    normalizeStoryPlan,
+    normalizeStoryPlanProgress,
     normalizeStoryState,
     partitionNewMemories,
     sceneMemoryPrompt,
+    storyPlanPrompt,
+    storyPlanToLoreContent,
     storyStateToLoreContent,
     validateStudioDraft,
 } from '../../../public/scripts/extensions/third-party/codex-oauth/studio-core.js';
@@ -163,4 +168,46 @@ test('story state normalization separates canon, plans, and directional relation
     assert.match(lore, /Canon: Mira returned to port\./);
     assert.doesNotMatch(lore, /Reveal the maker/);
     assert.equal(state.authorPlans[0].content, 'Reveal the maker in chapter five.');
+});
+
+test('Story Plan normalizes stable chapter and scene focus without requiring the feature', () => {
+    assert.equal(normalizeStoryPlan(null), null);
+    assert.equal(normalizeStoryPlan({ chapters: [null, 'invalid'] }), null);
+    assert.deepEqual(normalizeStoryPlanProgress({}, null), { active: false, chapterId: '', sceneId: '' });
+    const plan = normalizeStoryPlan({
+        title: 'The Shifting Atlas',
+        premise: 'The final chapter reveals the atlas maker.',
+        style_guide: ['limited point of view'],
+        chapters: [
+            {
+                id: 'arrival', title: 'Arrival', summary: 'Mira reaches port.', goals: ['Meet Ivo'],
+                scenes: [{ id: 'interview', title: 'Interview', summary: 'Question Ivo.', constraints: ['Do not reveal the maker'] }],
+            },
+            { id: 'arrival', title: 'Revelation', summary: 'The maker is revealed.', scenes: [] },
+        ],
+    });
+    assert.equal(plan.schema, 'amy_story_plan_v1');
+    assert.deepEqual(normalizeStoryPlan({ chapters: [{}], styleGuide: 'limited point of view' }).styleGuide, ['limited point of view']);
+    assert.deepEqual(plan.chapters.map(chapter => chapter.id), ['arrival', 'arrival-2']);
+    const progress = normalizeStoryPlanProgress({ active: true, chapterId: 'arrival', sceneId: 'interview' }, plan);
+    const context = activeStoryPlanContext(plan, progress);
+    assert.equal(context.chapter.title, 'Arrival');
+    assert.equal(context.scene.title, 'Interview');
+    assert.equal(storyPlanToLoreContent(plan, { ...progress, active: false }), '');
+    const lore = storyPlanToLoreContent(plan, progress);
+    assert.match(lore, /Current chapter — Arrival/);
+    assert.match(lore, /Current scene — Interview/);
+    assert.match(lore, /Do not reveal the maker/);
+    assert.doesNotMatch(lore, /Revelation|final chapter reveals/);
+    const boundedLore = storyPlanToLoreContent(normalizeStoryPlan({
+        chapters: [{ goals: Array.from({ length: 8 }, (_, index) => `goal-${index + 1}`) }],
+    }), { active: true });
+    assert.doesNotMatch(boundedLore, /goal-7/);
+});
+
+test('Story Plan prompt preserves the outline and forbids invented plot turns', () => {
+    const prompt = storyPlanPrompt('Chapter one: Mira arrives.');
+    assert.match(prompt, /amy_story_plan_v1/);
+    assert.match(prompt, /Do not invent new plot turns/i);
+    assert.match(prompt, /Chapter one: Mira arrives\./);
 });

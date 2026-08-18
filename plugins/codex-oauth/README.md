@@ -116,6 +116,24 @@ later generations. Author plans remain in reviewed chat metadata and are not
 injected into the roleplay prompt; the model is instructed never to infer them
 from dialogue or narration.
 
+### Optional Story Plan
+
+An existing novel premise and chapter outline can be pasted into the
+**Planning** tab as Markdown, plain text, or `amy_story_plan_v1` JSON. Creator
+Studio prepares a reviewable chapter/scene structure and saves the approved
+full plan in chat metadata. The feature is optional: if no plan is saved or
+activated, the existing character, lorebook, memory, Story State, and
+checkpoint workflows behave exactly as before.
+
+Activating a writing focus mirrors only the selected current chapter and scene,
+their goals, constraints, and the shared style guide to one replaceable
+chat-lorebook entry. It is explicitly labelled as non-canon author guidance.
+The full premise, later chapters, and future scenes are not injected, which
+reduces context cost and avoids leaking planned reveals into the prose. The
+focus can be changed or deactivated without deleting the saved plan. On a
+checkpoint, duplicate and rebind the chat lorebook before activating,
+refreshing, or deactivating branch-specific guidance.
+
 Branch visualization is intentionally left to SillyTavern checkpoints and the
 Timelines extension. **Create checkpoint** confirms and runs SillyTavern's
 native checkpoint command on the latest message; Timelines can then display
