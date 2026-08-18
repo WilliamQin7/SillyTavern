@@ -5,6 +5,7 @@ import wavefile from 'wavefile';
 import fetch from 'node-fetch';
 import FormData from 'form-data';
 import mime from 'mime-types';
+import { buildMiMoTtsRequest, extractMiMoTtsAudio, fetchMiMoTtsResponse, getMiMoTtsContentType, getMiMoTtsErrorMessage, MiMoTtsError } from '../mimo-tts.js';
 import { getPipeline } from '../transformers.js';
 import { forwardFetchResponse } from '../util.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
@@ -173,6 +174,67 @@ pollinations.post('/generate', async (req, res) => {
 });
 
 router.use('/pollinations', pollinations);
+
+const mimo = express.Router();
+
+mimo.post('/generate', async (req, res) => {
+    const requestAbortController = new AbortController();
+    const abortOnDisconnect = () => requestAbortController.abort();
+    req.once('aborted', abortOnDisconnect);
+    res.once('close', abortOnDisconnect);
+
+    try {
+        const apiKey = readSecret(req.user.directories, SECRET_KEYS.MIMO_TTS);
+        if (!apiKey) {
+            return res.status(400).json({ error: 'Xiaomi MiMo API key is not configured.' });
+        }
+        if (apiKey.startsWith('tp-')) {
+            return res.status(400).json({ error: 'MiMo Token Plan keys are not supported here. Use a standard MiMo API key beginning with sk-.' });
+        }
+
+        const request = buildMiMoTtsRequest(req.body ?? {});
+        const response = await fetchMiMoTtsResponse({
+            apiKey,
+            request,
+            fetchImpl: fetch,
+            signal: requestAbortController.signal,
+        });
+
+        if (!response.ok) {
+            const retryAfter = response.headers.get('retry-after');
+            if (retryAfter && response.status === 429) {
+                res.set('Retry-After', retryAfter);
+            }
+            console.warn(`MiMo TTS synthesis failed with HTTP ${response.status}.`);
+            return res.status(response.status).json({ error: getMiMoTtsErrorMessage(response.status) });
+        }
+
+        const payload = await response.json();
+        const audio = extractMiMoTtsAudio(payload);
+        res.set({
+            'Cache-Control': 'no-store',
+            'Content-Type': getMiMoTtsContentType(request.audio.format),
+        });
+        return res.send(audio);
+    } catch (error) {
+        if (requestAbortController.signal.aborted && !res.writableEnded) {
+            return;
+        }
+        if (error instanceof MiMoTtsError) {
+            return res.status(error.status).json({ error: error.message });
+        }
+        if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+            return res.status(504).json({ error: 'Xiaomi MiMo TTS request timed out.' });
+        }
+        console.error('Unexpected MiMo TTS synthesis error:', error?.message ?? error);
+        return res.status(500).json({ error: 'Xiaomi MiMo TTS generation failed.' });
+    } finally {
+        req.removeListener('aborted', abortOnDisconnect);
+        res.removeListener('close', abortOnDisconnect);
+    }
+});
+
+router.use('/mimo', mimo);
 
 const elevenlabs = express.Router();
 

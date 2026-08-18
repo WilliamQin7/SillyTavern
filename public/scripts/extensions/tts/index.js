@@ -35,13 +35,16 @@ import { KokoroTtsProvider } from './kokoro.js';
 import { TtsWebuiProvider } from './tts-webui.js';
 import { PollinationsTtsProvider } from './pollinations.js';
 import { MiniMaxTtsProvider } from './minimax.js';
+import { MiMoTtsProvider } from './mimo.js';
 import { ElectronHubTtsProvider } from './electronhub.js';
 import { ChutesTtsProvider } from './chutes.js';
 import { VolcengineTtsProvider } from './volcengine.js';
+import { getTtsPlaybackControlState, TTS_PLAYBACK_ACTION, TtsPlaybackSession } from './playback-session.js';
 import { applyLocale, t } from '/scripts/i18n.js';
 
 const UPDATE_INTERVAL = 1000;
 const wrapper = new ModuleWorkerWrapper(moduleWorker);
+const playbackSession = new TtsPlaybackSession();
 
 let voiceMapEntries = [];
 let voiceMap = {}; // {charName:voiceid, charName2:voiceid2}
@@ -138,6 +141,7 @@ const ttsProviders = {
     'GPT-SoVITS-V2 (Unofficial)': GptSovitsV2Provider,
     Kokoro: KokoroTtsProvider,
     MiniMax: MiniMaxTtsProvider,
+    'Xiaomi MiMo': MiMoTtsProvider,
     Novel: NovelTtsProvider,
     OpenAI: OpenAITtsProvider,
     'OpenAI Compatible': OpenAICompatibleTtsProvider,
@@ -219,6 +223,8 @@ async function moduleWorker() {
 }
 
 function resetTtsPlayback() {
+    playbackSession.invalidate();
+
     // Stop system TTS utterance
     cancelTtsPlay();
 
@@ -227,8 +233,13 @@ function resetTtsPlayback() {
     currentAudioJob = null;
 
     // Reset audio element
-    audioElement.currentTime = 0;
-    audioElement.src = '';
+    audioPaused = false;
+    audioElement.pause();
+    audioElement.oncanplay = null;
+    audioElement.onended = null;
+    audioElement.onerror = null;
+    audioElement.removeAttribute('src');
+    audioElement.load();
 
     // Clear any queue items
     ttsJobQueue.splice(0, ttsJobQueue.length);
@@ -236,6 +247,7 @@ function resetTtsPlayback() {
 
     // Set audio ready to process again
     audioQueueProcessorReady = true;
+    updateUiAudioPlayState();
 }
 
 function isTtsProcessing() {
@@ -253,7 +265,7 @@ function isTtsProcessing() {
 }
 
 /**
- * @typedef {ChatMessage & { id?: number, manual?: boolean, segmentText?: string, segmentType?: string }} TtsMessage
+ * @typedef {ChatMessage & { id?: number, manual?: boolean, segmentText?: string, segmentType?: string, playbackRunId?: number }} TtsMessage
  */
 
 /**
@@ -270,6 +282,7 @@ function processAndQueueTtsMessage(message, messageId = null, { manual = false }
     const clone = structuredClone(message);
     clone.id = messageId ?? null;
     clone.manual = manual ?? false;
+    clone.playbackRunId = playbackSession.runId;
 
     if (!extension_settings.tts.narrate_by_paragraphs) {
         ttsJobQueue.push(clone);
@@ -320,7 +333,7 @@ audioElement.autoplay = true;
 
 /**
  * @type AudioJob[] Audio job queue
- * @typedef {{audioBlob: Blob | string, char: string}} AudioJob Audio job object
+ * @typedef {{audioBlob: Blob | string, char: string, playbackRunId: number}} AudioJob Audio job object
  */
 const audioJobQueue = [];
 /**
@@ -336,17 +349,24 @@ let audioQueueProcessorReady = true;
  * @returns {Promise<void>} Promise that resolves when audio playback is started
  */
 async function playAudioData(audioJob) {
-    const { audioBlob, char } = audioJob;
-    // Since current audio job can be cancelled, don't playback if it is null
-    if (currentAudioJob == null) {
-        console.log('Cancelled TTS playback because currentAudioJob was null');
+    const { audioBlob, char, playbackRunId } = audioJob;
+    const isCurrentAudioJob = () => currentAudioJob === audioJob && playbackSession.isCurrent(playbackRunId);
+    if (!isCurrentAudioJob()) {
+        console.debug('Cancelled stale TTS audio playback.');
+        return;
     }
     if (audioBlob instanceof Blob) {
         const srcUrl = await getBase64Async(audioBlob);
+        if (!isCurrentAudioJob()) {
+            return;
+        }
 
         // VRM lip sync
         if (extension_settings.vrm?.enabled && typeof globalThis.vrmLipSync === 'function') {
             await globalThis.vrmLipSync(audioBlob, char);
+            if (!isCurrentAudioJob()) {
+                return;
+            }
         }
 
         audioElement.src = srcUrl;
@@ -355,12 +375,35 @@ async function playAudioData(audioJob) {
     } else {
         throw `TTS received invalid audio data type ${typeof audioBlob}`;
     }
-    audioElement.addEventListener('ended', completeCurrentAudioJob);
-    audioElement.addEventListener('canplay', () => {
+    audioElement.onended = () => {
+        if (isCurrentAudioJob()) {
+            completeCurrentAudioJob();
+        }
+    };
+    audioElement.onerror = () => {
+        if (!isCurrentAudioJob()) {
+            return;
+        }
+        console.error('TTS audio playback failed.', audioElement.error);
+        completeCurrentAudioJob();
+    };
+    audioElement.oncanplay = async () => {
+        if (audioPaused || currentAudioJob !== audioJob || !playbackSession.isCurrent(playbackRunId)) {
+            return;
+        }
         console.debug('Starting TTS playback');
         audioElement.playbackRate = extension_settings.tts.playback_rate;
-        audioElement.play();
-    });
+        try {
+            await audioElement.play();
+        } catch (error) {
+            if (!isCurrentAudioJob()) {
+                return;
+            }
+            console.error('Unable to start TTS audio playback:', error);
+            completeCurrentAudioJob();
+        }
+        updateUiAudioPlayState();
+    };
 }
 
 globalThis.tts_preview = function (id) {
@@ -400,45 +443,93 @@ async function onTtsVoicesClick() {
 function updateUiAudioPlayState() {
     if (extension_settings.tts.enabled == true) {
         $('#ttsExtensionMenuItem').show();
-        let img;
-        // Give user feedback that TTS is active by setting the stop icon if processing or playing
-        if (!audioElement.paused || isTtsProcessing()) {
-            img = 'fa-solid fa-stop-circle extensionsMenuExtensionButton';
-        } else {
-            img = 'fa-solid fa-circle-play extensionsMenuExtensionButton';
+        const controlState = getTtsPlaybackControlState({
+            paused: audioPaused,
+            playing: !audioElement.paused,
+            processing: isTtsProcessing(),
+        });
+        let icon;
+        let label;
+        let title;
+        switch (controlState.action) {
+            case TTS_PLAYBACK_ACTION.RESUME:
+                icon = 'fa-solid fa-circle-play extensionsMenuExtensionButton';
+                label = t`Resume TTS`;
+                title = t`Resume TTS playback`;
+                break;
+            case TTS_PLAYBACK_ACTION.PAUSE:
+                icon = 'fa-solid fa-circle-pause extensionsMenuExtensionButton';
+                label = t`Pause TTS`;
+                title = t`Pause TTS playback`;
+                break;
+            default:
+                icon = 'fa-solid fa-circle-play extensionsMenuExtensionButton';
+                label = t`Play last message`;
+                title = t`Read the last message aloud`;
+                break;
         }
-        $('#tts_media_control').attr('class', img);
+        $('#tts_media_control').attr('class', icon);
+        $('#tts_media_control_label').text(label);
+        $('#ttsExtensionMenuItem').attr('title', title);
+        $('#ttsExtensionStop').toggle(controlState.isActive);
     } else {
         $('#ttsExtensionMenuItem').hide();
+        $('#ttsExtensionStop').hide();
     }
 }
 
-function onAudioControlClicked() {
-    audioElement.src = '/sounds/silence.mp3';
-    let context = getContext();
-    // Not pausing, doing a full stop to anything TTS is doing. Better UX as pause is not as useful
-    if (!audioElement.paused || isTtsProcessing()) {
-        resetTtsPlayback();
+async function onAudioControlClicked() {
+    const context = getContext();
+    const controlState = getTtsPlaybackControlState({
+        paused: audioPaused,
+        playing: !audioElement.paused,
+        processing: isTtsProcessing(),
+    });
+    if (controlState.action === TTS_PLAYBACK_ACTION.RESUME) {
+        audioPaused = false;
+        if (currentAudioJob && audioElement.getAttribute('src')) {
+            try {
+                await audioElement.play();
+            } catch (error) {
+                console.error('Unable to resume TTS audio playback:', error);
+                completeCurrentAudioJob();
+            }
+        }
+        wrapper.update();
+    } else if (controlState.action === TTS_PLAYBACK_ACTION.PAUSE) {
+        audioPaused = true;
+        audioElement.pause();
     } else if (context?.chat?.length > 0) {
         // Default play behavior if not processing or playing is to play the last message.
         const id = context.chat.length - 1;
         processAndQueueTtsMessage(context.chat[id], id, { manual: true });
+        wrapper.update();
     }
     updateUiAudioPlayState();
+}
+
+function onAudioStopClicked() {
+    resetTtsPlayback();
 }
 
 function addAudioControl() {
     $('#tts_wand_container').append(applyLocale(`
         <div id="ttsExtensionMenuItem" class="list-group-item flex-container flexGap5">
-            <div id="tts_media_control" class="extensionsMenuExtensionButton "/></div>
-            <span data-i18n="TTS Playback">TTS Playback</span>
+            <div id="tts_media_control" class="extensionsMenuExtensionButton"></div>
+            <span id="tts_media_control_label">Play last message</span>
+        </div>`));
+    $('#tts_wand_container').append(applyLocale(`
+        <div id="ttsExtensionStop" class="list-group-item flex-container flexGap5">
+            <div class="extensionsMenuExtensionButton fa-solid fa-stop-circle"></div>
+            <span data-i18n="Stop TTS">Stop TTS</span>
         </div>`));
     $('#tts_wand_container').append(applyLocale(`
         <div id="ttsExtensionNarrateAll" class="list-group-item flex-container flexGap5">
             <div class="extensionsMenuExtensionButton fa-solid fa-radio"></div>
             <span data-i18n="Narrate All Chat">Narrate All Chat</span>
         </div>`));
-    $('#ttsExtensionMenuItem').attr('title', t`TTS play/pause`).attr('data-i18n', '[title]TTS play/pause').on('click', onAudioControlClicked);
+    $('#ttsExtensionMenuItem').on('click', onAudioControlClicked);
+    $('#ttsExtensionStop').attr('title', t`Stop TTS playback and clear the queue`).attr('data-i18n', '[title]Stop TTS playback and clear the queue').on('click', onAudioStopClicked);
     $('#ttsExtensionNarrateAll').attr('title', t`Narrate all messages in the current chat. Includes user messages, excludes hidden comments.`).attr('data-i18n', '[title]Narrate all messages in the current chat. Includes user messages, excludes hidden comments.').on('click', playFullConversation);
     updateUiAudioPlayState();
 }
@@ -446,7 +537,10 @@ function addAudioControl() {
 function completeCurrentAudioJob() {
     audioQueueProcessorReady = true;
     currentAudioJob = null;
-    // updateUiPlayState();
+    audioElement.oncanplay = null;
+    audioElement.onended = null;
+    audioElement.onerror = null;
+    updateUiAudioPlayState();
     wrapper.update();
 }
 
@@ -454,9 +548,13 @@ function completeCurrentAudioJob() {
  * Accepts an HTTP response containing audio/mpeg data, and puts the data as a Blob() on the queue for playback
  * @param {Response} response
  * @param {string} char
- * @returns {Promise<{audioBlob: Blob|string, mimeType: string}>}
+ * @param {number} playbackRunId Playback run ID
+ * @returns {Promise<{audioBlob: Blob|string, mimeType: string}|null>}
  */
-async function addAudioJob(response, char) {
+async function addAudioJob(response, char, playbackRunId) {
+    if (!playbackSession.isCurrent(playbackRunId)) {
+        return null;
+    }
     let audioBlob, mimeType;
     if (typeof response === 'string') {
         audioBlob = response;
@@ -468,7 +566,10 @@ async function addAudioJob(response, char) {
         }
         mimeType = audioBlob.type;
     }
-    audioJobQueue.push({ audioBlob, char });
+    if (!playbackSession.isCurrent(playbackRunId)) {
+        return null;
+    }
+    audioJobQueue.push({ audioBlob, char, playbackRunId });
     console.debug('Pushed audio job to queue.');
     return { audioBlob, mimeType };
 }
@@ -478,11 +579,16 @@ async function processAudioJobQueue() {
     if (audioJobQueue.length == 0 || !audioQueueProcessorReady || audioPaused) {
         return;
     }
+    let audioJob = null;
     try {
         audioQueueProcessorReady = false;
-        currentAudioJob = audioJobQueue.shift();
-        playAudioData(currentAudioJob);
+        audioJob = audioJobQueue.shift();
+        currentAudioJob = audioJob;
+        await playAudioData(audioJob);
     } catch (error) {
+        if (currentAudioJob !== audioJob) {
+            return;
+        }
         toastr.error(error.toString());
         console.error(error);
         audioQueueProcessorReady = true;
@@ -498,40 +604,67 @@ const ttsJobQueue = [];
 /** @type {TtsMessage|null} */
 let currentTtsJob = null; // Null if nothing is currently being processed
 
-function completeTtsJob() {
+function completeTtsJob(playbackRunId = playbackSession.runId) {
+    if (!playbackSession.isCurrent(playbackRunId)) {
+        return;
+    }
     console.info(`Current TTS job for ${currentTtsJob?.name} completed.`);
     currentTtsJob = null;
 }
 
 async function tts(text, voiceId, char, voiceMapKey = null) {
+    const playbackRunId = currentTtsJob?.playbackRunId ?? playbackSession.runId;
+    const abortController = playbackSession.createAbortController();
     const messageId = currentTtsJob?.id ?? null;
 
-    await eventSource.emit(event_types.TTS_JOB_STARTED, { messageId, characterName: char, text, voiceId });
-
-    async function processResponse(response) {
-        // RVC injection
-        if (typeof globalThis.rvcVoiceConversion === 'function' && extension_settings.rvc.enabled)
-            response = await globalThis.rvcVoiceConversion(response, char, text);
-
-        const audioResult = await addAudioJob(response, char);
-        const eventData = { messageId, characterName: char, text, audio: audioResult.audioBlob, mimeType: audioResult.mimeType };
-        await eventSource.emit(event_types.TTS_AUDIO_READY, eventData);
-    }
-
-    // voiceMapKey can also include segment qualifiers, e.g. '{char} ("Quotes")'
-    let response = await ttsProvider.generateTts(text, voiceId, voiceMapKey);
-
-    // If async generator, process every chunk as it comes in
-    if (typeof response[Symbol.asyncIterator] === 'function') {
-        for await (const chunk of response) {
-            await processResponse(chunk);
+    try {
+        await eventSource.emit(event_types.TTS_JOB_STARTED, { messageId, characterName: char, text, voiceId });
+        if (!playbackSession.isCurrent(playbackRunId)) {
+            return;
         }
-    } else {
-        await processResponse(response);
-    }
 
-    await eventSource.emit(event_types.TTS_JOB_COMPLETE, { messageId, characterName: char });
-    completeTtsJob();
+        async function processResponse(response) {
+            if (!playbackSession.isCurrent(playbackRunId)) {
+                return;
+            }
+            // RVC injection
+            if (typeof globalThis.rvcVoiceConversion === 'function' && extension_settings.rvc.enabled)
+                response = await globalThis.rvcVoiceConversion(response, char, text);
+
+            const audioResult = await addAudioJob(response, char, playbackRunId);
+            if (!audioResult || !playbackSession.isCurrent(playbackRunId)) {
+                return;
+            }
+            const eventData = { messageId, characterName: char, text, audio: audioResult.audioBlob, mimeType: audioResult.mimeType };
+            await eventSource.emit(event_types.TTS_AUDIO_READY, eventData);
+        }
+
+        // voiceMapKey can also include segment qualifiers, e.g. '{char} ("Quotes")'
+        let response = await ttsProvider.generateTts(text, voiceId, voiceMapKey, { signal: abortController.signal });
+
+        if (!playbackSession.isCurrent(playbackRunId)) {
+            return;
+        }
+
+        // If async generator, process every chunk as it comes in
+        if (typeof response[Symbol.asyncIterator] === 'function') {
+            for await (const chunk of response) {
+                if (!playbackSession.isCurrent(playbackRunId)) {
+                    return;
+                }
+                await processResponse(chunk);
+            }
+        } else {
+            await processResponse(response);
+        }
+
+        if (playbackSession.isCurrent(playbackRunId)) {
+            await eventSource.emit(event_types.TTS_JOB_COMPLETE, { messageId, characterName: char });
+            completeTtsJob(playbackRunId);
+        }
+    } finally {
+        playbackSession.releaseAbortController(abortController);
+    }
 }
 
 function parseMessageSegments(text) {
@@ -611,6 +744,7 @@ async function processTtsQueue() {
         const char = currentTtsJob.name;
         const segmentText = currentTtsJob.segmentText;
         const segmentType = currentTtsJob.segmentType;
+        const jobPlaybackRunId = currentTtsJob.playbackRunId ?? playbackSession.runId;
 
         console.log(`TTS (${segmentType}): ${segmentText}`);
 
@@ -660,6 +794,9 @@ async function processTtsQueue() {
             // Pass the full voiceMapKey (e.g., "User ("Quotes")") as well with character name
             await tts(segmentText, voiceId, char, voiceMapKey);
         } catch (error) {
+            if (!playbackSession.isCurrent(jobPlaybackRunId)) {
+                return;
+            }
             toastr.error(error.toString());
             console.error(error);
             currentTtsJob = null;
@@ -749,6 +886,7 @@ async function processTtsQueue() {
                 extra: currentTtsJob.extra,
                 id: currentTtsJob.id,
                 manual: currentTtsJob.manual,
+                playbackRunId: currentTtsJob.playbackRunId,
             };
             ttsJobQueue.unshift(segmentJob);
         }
