@@ -8,6 +8,8 @@ import { tr } from './i18n.js';
 
 const PROVIDER_ID = 'codex-oauth';
 const API = `/api/plugins/${PROVIDER_ID}`;
+const DEFAULT_MAX_CONTEXT = 4095;
+const UNLOCKED_MAX_CONTEXT = 2_000_000;
 let unregisterProvider = null;
 let models = [];
 let statusPoll = null;
@@ -19,6 +21,17 @@ function settingsFor() {
 function currentModel() {
     const provider = settingsFor();
     return provider.manualModel.trim() || provider.model;
+}
+
+function syncContextControls() {
+    if (oai_settings.chat_completion_source !== PROVIDER_ID) return;
+    const contextControl = $('#openai_max_context');
+    const contextCounter = $('#openai_max_context_counter');
+    if (!contextControl.length || !contextCounter.length) return;
+    const maximum = oai_settings.max_context_unlocked ? UNLOCKED_MAX_CONTEXT : DEFAULT_MAX_CONTEXT;
+    const contextTokens = Math.min(maximum, Math.max(512, Number(oai_settings.openai_max_context) || DEFAULT_MAX_CONTEXT));
+    contextControl.attr('max', maximum).val(contextTokens).trigger('input');
+    contextCounter.attr('max', maximum).val(contextTokens);
 }
 
 function saveProviderSettings() {
@@ -309,6 +322,9 @@ export function initCodexOAuthProvider() {
     $('#codex-oauth-debug').prop('checked', provider.showPromptStructure);
     saveProviderSettings();
     eventSource.on(event_types.CHAT_COMPLETION_SETTINGS_READY, promptStructure);
+    eventSource.on(event_types.CHATCOMPLETION_SOURCE_CHANGED, syncContextControls);
+    eventSource.on(event_types.CHATCOMPLETION_MODEL_CHANGED, syncContextControls);
+    $('#oai_max_context_unlocked').on('input.codex-oauth-context', syncContextControls);
     refreshStatus();
     refreshModels(false);
     if (oai_settings.chat_completion_source === PROVIDER_ID) $('#chat_completion_source').val(PROVIDER_ID).trigger('change');

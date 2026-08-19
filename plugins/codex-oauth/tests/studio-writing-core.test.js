@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+    buildCurrentSceneWritingRequest,
     compileWritingContext,
     createDefaultWritingProfile,
     markNarrativeLedgerStale,
@@ -15,6 +16,20 @@ import {
     writingCriticPrompt,
     WRITING_PROFILE_SCHEMA,
 } from '../../../public/scripts/extensions/third-party/codex-oauth/studio-writing-core.js';
+
+test('current scene request is bounded, complete, and does not claim planned events are canon', () => {
+    const request = buildCurrentSceneWritingRequest({
+        chapterTitle: '第一章',
+        sceneTitle: '初入公寓',
+        language: '简体中文',
+        expectedSceneWords: 4000,
+    });
+    assert.match(request, /第一章 \/ 初入公寓/);
+    assert.match(request, /4000/);
+    assert.match(request, /author intent, not as events that already happened/);
+    assert.match(request, /Do not ask me to repeat the focus/);
+    assert.match(request, /Output only the prose/);
+});
 
 function profile(overrides = {}) {
     const base = createDefaultWritingProfile();
@@ -211,6 +226,9 @@ test('compiler excludes future plan data and reports a stable source hash', () =
     assert.equal(result.includesFuture, false);
     assert.doesNotMatch(result.text, /Ivo is the map maker|future revelation/);
     assert.match(result.text, /CURRENT AUTHOR INTENT — NOT CANON/);
+    assert.match(result.text, /ACTIVE WRITING READINESS/);
+    assert.match(result.text, /without requesting the same focus fields again/);
+    assert.match(result.text, /no earlier story events have become canon yet/);
     assert.match(result.sourceHash, /^fnv1a-[0-9a-f]{8}$/);
 });
 

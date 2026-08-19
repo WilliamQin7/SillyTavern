@@ -1881,6 +1881,8 @@
     "tts_enabled": "啟用",
     "Narrate user messages": "朗讀使用者訊息",
     "Auto Generation": "自動生成",
+    "Narrate character greetings": "朗讀角色開場白",
+    "Applies only when opening a character or alternate greeting. New replies still follow Auto Generation.": "僅在開啟角色或切換開場白時生效；後續新回覆仍由「自動生成」控制。",
     "Requires auto generation to be enabled.": "需要啟用自動生成功能。",
     "Narrate by paragraphs (when streaming)": "按段落朗讀（使用「串流」時）",
     "Only narrate quotes": "僅朗讀「引號」中的文字",

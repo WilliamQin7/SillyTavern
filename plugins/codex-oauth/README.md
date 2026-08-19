@@ -65,6 +65,52 @@ for any other locale. Another language can be added with one namespaced JSON
 file under `public/scripts/extensions/third-party/codex-oauth/locales/` and one
 manifest mapping, without changing the feature code.
 
+### Lightweight story projects
+
+The **Projects** tab stores optional `amy_story_project_v1` manifests in Amy
+Studio settings. A project groups a name, description, tags, stable character
+avatar references,
+World Info names, an optional Writing Profile template ID, notes, and an
+optional reusable Story Plan snapshot. These are references and defaults, not
+ownership rules: the same character or World Info may be listed by any number
+of projects.
+
+Binding a project writes only its ID to the current chat metadata. It never
+changes active characters, attaches World Info, injects prompts, or replaces a
+saved plan automatically. It also adds the native chat ID to the project's
+private story index. Generated prose remains in SillyTavern's normal per-user
+chat files; the project never duplicates story text.
+
+Project manifests are stored in the current user's extension settings and chat
+bindings are stored in chat metadata. In a standard installation these live
+under the ignored `data/<user>/` runtime tree, not in extension source files or
+Git commits. An explicit **Export project settings** JSON deliberately excludes
+story bindings and prose, so it can be reused as a clean project draft.
+The project tab also offers two private `.amy-story.zip` formats: **Export
+story only** preserves accepted visible messages in a clean JSONL container
+plus chapter ordering metadata while stripping project descriptions, tags,
+source owners, chat settings, and swipes.
+**Export full project** also includes the required character-card PNGs, World
+Info (including chat continuity lorebooks), group definitions, plot snapshot,
+notes, and the referenced Writing Profile. Neither package is written into
+source control.
+
+Portable imports are copy-only. Project IDs, chats, characters, World Info,
+groups, and Writing Profile IDs are remapped when necessary, so local content
+is never silently overwritten. A story-only import uses the current character
+or creates a neutral archive character; it deliberately does not restore the
+source character, world, plot, memory, or writing settings. OAuth credentials
+are never included in either package. If a server error interrupts a multi-
+resource import, already-created copies are retained instead of being deleted
+by a risky automatic rollback; remove those imported copies before retrying.
+
+A project plot can be copied into the current chat as
+an editable Story Plan draft and must still pass the normal review and save
+confirmation. A referenced Writing Profile template can likewise be copied to
+the chat as an unsaved review draft. Projects can be created, duplicated,
+imported, and exported;
+using no project leaves every existing workflow unchanged.
+
 ### Character and lorebook
 
 1. Describe a character and setting, then choose **Generate draft**.

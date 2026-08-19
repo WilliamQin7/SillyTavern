@@ -35,6 +35,7 @@ test('every static Amy Studio data-i18n key has a bundled fallback', async () =>
     const files = [
         'public/scripts/extensions/third-party/codex-oauth/settings.js',
         'public/scripts/extensions/third-party/codex-oauth/studio.js',
+        'public/scripts/extensions/third-party/codex-oauth/studio-project.js',
         'public/scripts/extensions/third-party/codex-oauth/studio-writing.js',
     ];
     const source = (await Promise.all(files.map(file => fs.readFile(path.join(root, file), 'utf8')))).join('\n');

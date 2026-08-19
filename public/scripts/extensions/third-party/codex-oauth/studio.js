@@ -1,15 +1,20 @@
-import { characters, chat_metadata, eventSource, event_types, getCharacters, getCurrentChatId, getRequestHeaders, saveMetadata, saveSettingsDebounced, this_chid } from '../../../../script.js';
+import { characters, chat_metadata, eventSource, event_types, getCharacters, getCurrentChatId, getMaxPromptTokens, getRequestHeaders, saveMetadata, saveSettingsDebounced, this_chid } from '../../../../script.js';
 import { extension_settings } from '../../../extensions.js';
+import { groups } from '../../../group-chats.js';
 import { oai_settings } from '../../../openai.js';
 import { Popup } from '../../../popup.js';
 import { getContext } from '../../../st-context.js';
 import { escapeHtml } from '../../../utils.js';
-import { createWorldInfoEntry, loadWorldInfo, saveWorldInfo, updateWorldInfoList } from '../../../world-info.js';
+import { createWorldInfoEntry, getWorldInfoPrompt, loadWorldInfo, saveWorldInfo, updateWorldInfoList, world_info_budget, world_info_budget_cap } from '../../../world-info.js';
 import { tr, translateStudioValidationErrors } from './i18n.js';
+import { evaluateStoryGenerationReadiness, normalizeStoryProjectChatState, normalizeStoryProjectSettings, storyProjectStoryKey } from './studio-project-core.js';
+import { bindStoryProject, storyProjectMarkup, storyProjectTabMarkup } from './studio-project.js';
 import {
     compileWritingContext,
+    buildCurrentSceneWritingRequest,
     markNarrativeLedgerStale,
     mergeNarrativeLedger,
+    normalizeWritingProfile,
     WRITING_CONTEXT_ENTRY_COMMENT,
 } from './studio-writing-core.js';
 import {
@@ -48,12 +53,14 @@ const CHAT_STATE_KEY = 'amy_creator_studio';
 const PROVIDER_ID = 'codex-oauth';
 let chatSaveTimer = null;
 let writingController = null;
+let projectController = null;
 
 function settings() {
     const input = extension_settings[SETTINGS_KEY];
     const normalized = normalizeStudioSettings(input);
     normalized.writingProfileTemplates = input?.writingProfileTemplates;
-    extension_settings[SETTINGS_KEY] = normalizeWritingExtensionSettings(normalized);
+    normalized.storyProjects = input?.storyProjects;
+    extension_settings[SETTINGS_KEY] = normalizeStoryProjectSettings(normalizeWritingExtensionSettings(normalized));
     return extension_settings[SETTINGS_KEY];
 }
 
@@ -65,7 +72,7 @@ function chatState() {
     const input = chat_metadata[CHAT_STATE_KEY];
     const state = input && typeof input === 'object' ? input : {};
     const storyPlan = normalizeStoryPlan(state.storyPlan);
-    chat_metadata[CHAT_STATE_KEY] = normalizeWritingChatState({
+    chat_metadata[CHAT_STATE_KEY] = normalizeStoryProjectChatState(normalizeWritingChatState({
         ...state,
         pendingMemories: typeof state.pendingMemories === 'string' ? state.pendingMemories : '',
         pendingPlanOutline: typeof state.pendingPlanOutline === 'string' ? state.pendingPlanOutline : '',
@@ -74,17 +81,25 @@ function chatState() {
         storyState: normalizeStoryState(state.storyState),
         storyPlan,
         storyPlanProgress: normalizeStoryPlanProgress(state.storyPlanProgress, storyPlan),
-    });
+    }));
     return chat_metadata[CHAT_STATE_KEY];
 }
 
+function currentStoryReference() {
+    const context = getContext();
+    return {
+        chatId: String(getCurrentChatId() ?? ''),
+        ownerId: context.groupId ? `group:${context.groupId}` : characters[this_chid]?.avatar ?? '',
+    };
+}
+
 function persistChat({ immediate = false } = {}) {
-    const chatId = String(getCurrentChatId() ?? '');
-    if (!chatId) return Promise.resolve();
+    const storyKey = storyProjectStoryKey(currentStoryReference());
+    if (!storyKey) return Promise.resolve();
     if (chatSaveTimer) clearTimeout(chatSaveTimer);
     const save = async () => {
         chatSaveTimer = null;
-        if (String(getCurrentChatId() ?? '') !== chatId) return;
+        if (storyProjectStoryKey(currentStoryReference()) !== storyKey) return;
         await saveMetadata();
     };
     if (immediate) return save();
@@ -321,6 +336,84 @@ function transcriptWindow(windowSize) {
     };
 }
 
+function currentGenerationReadiness() {
+    const state = chatState();
+    return evaluateStoryGenerationReadiness({
+        contextTokens: oai_settings.openai_max_context,
+        responseTokens: oai_settings.openai_max_tokens,
+        expectedSceneWords: state.expectedSceneWords,
+        compiledContextTokens: state.compiledWritingContext?.estimatedTokens,
+        worldInfoPercent: world_info_budget,
+        worldInfoCap: world_info_budget_cap,
+    });
+}
+
+function currentWritingContextIsFresh() {
+    const state = chatState();
+    if (!state.writingControlActive || !state.writingProfile) return true;
+    const compiled = compileWritingContext({
+        profile: state.writingProfile,
+        plan: state.storyPlanProgress?.active ? state.storyPlan : null,
+        progress: state.storyPlanProgress,
+        ledger: state.narrativeLedger,
+        expectedSceneWords: state.expectedSceneWords,
+    });
+    return Boolean(state.compiledWritingContext?.sourceHash)
+        && compiled.sourceHash === state.compiledWritingContext.sourceHash;
+}
+
+function applyRecommendedGenerationCapacity(readiness = currentGenerationReadiness()) {
+    const contextTokens = Math.max(readiness.contextTokens, readiness.recommendedContextTokens);
+    const responseTokens = Math.max(readiness.responseTokens, readiness.recommendedResponseTokens);
+    const contextControl = $('#openai_max_context');
+    const contextCounter = $('#openai_max_context_counter');
+    const responseControl = $('#openai_max_tokens');
+    let contextMaximum = Number(contextControl.attr('max')) || Number.POSITIVE_INFINITY;
+    const responseMaximum = Number(responseControl.attr('max')) || Number.POSITIVE_INFINITY;
+
+    if (contextMaximum < contextTokens) {
+        const unlockControl = $('#oai_max_context_unlocked');
+        if (unlockControl.length) {
+            unlockControl.prop('checked', true).trigger('input');
+            contextMaximum = Math.max(Number(contextControl.attr('max')) || 0, contextTokens);
+            contextControl.attr('max', contextMaximum);
+            contextCounter.attr('max', contextMaximum);
+        }
+    }
+
+    if (contextMaximum < contextTokens || responseMaximum < responseTokens) {
+        throw new Error(tr('studio.error.generationCapacityLimit', {
+            context: contextTokens,
+            response: responseTokens,
+        }));
+    }
+    contextControl.val(contextTokens).trigger('input');
+    responseControl.val(responseTokens).trigger('input');
+    oai_settings.openai_max_context = contextTokens;
+    oai_settings.openai_max_tokens = responseTokens;
+    saveSettingsDebounced();
+    return currentGenerationReadiness();
+}
+
+function currentSceneWritingRequest() {
+    const state = chatState();
+    if (!state.storyPlanProgress?.active) throw new Error(tr('studio.error.sceneFocusMissing'));
+    const focus = activeStoryPlanContext(state.storyPlan, state.storyPlanProgress);
+    if (!focus?.chapter) throw new Error(tr('studio.error.sceneFocusMissing'));
+    return buildCurrentSceneWritingRequest({
+        chapterTitle: focus.chapter.title,
+        sceneTitle: focus.scene?.title ?? '',
+        language: state.writingProfile?.contract?.language,
+        expectedSceneWords: state.expectedSceneWords,
+    });
+}
+
+function stageCurrentSceneWritingRequest(request) {
+    const input = $('#send_textarea');
+    if (!input.length) throw new Error(tr('studio.error.chatInputMissing'));
+    input.val(String(request ?? '')).trigger('input').focus();
+}
+
 async function prepareMemoryDraft(prompt, toastKey, { requireStoryState = false } = {}) {
     const { text, source } = transcriptWindow(settings().memoryWindow);
     if (!source.chatId || !text) throw new Error(tr('studio.error.openChatMemory'));
@@ -408,6 +501,9 @@ async function syncActiveContext(content, source, comment) {
         content,
         comment,
         constant: true,
+        // This entry is unique, reviewed, chat-scoped, and compiler-bounded. It must not disappear
+        // merely because other constant lore exhausts the percentage-based World Info budget.
+        ignoreBudget: true,
         vectorized: false,
         order: 950,
         position: 0,
@@ -418,8 +514,7 @@ async function syncActiveContext(content, source, comment) {
     assertMemorySource(source);
 }
 
-async function syncActiveStoryPlan(plan, progress, source) {
-    const state = chatState();
+async function syncActiveStoryPlan(plan, progress, source, state = chatState()) {
     if (state.writingControlActive && state.writingProfile) {
         const compiled = compileWritingContext({
             profile: state.writingProfile,
@@ -433,6 +528,160 @@ async function syncActiveStoryPlan(plan, progress, source) {
         return;
     }
     await syncActiveContext(storyPlanToLoreContent(plan, progress), source, STORY_PLAN_ENTRY_COMMENT);
+}
+
+async function verifyActiveWritingContext(expectedContent, source) {
+    if (!expectedContent) return { proof: 'none' };
+    const bookName = chat_metadata.world_info;
+    const data = bookName ? await loadWorldInfo(bookName) : null;
+    const protectedEntry = Object.values(data?.entries ?? {}).find(entry => (
+        entry?.comment === WRITING_CONTEXT_ENTRY_COMMENT
+        && entry.content === expectedContent
+        && entry.constant === true
+        && entry.disable !== true
+        && entry.ignoreBudget === true
+    ));
+    if (!protectedEntry) throw new Error(tr('studio.error.projectContextNotActive'));
+    const context = getContext();
+    const chat = context.chat
+        .filter(message => !message.is_system && typeof message.mes === 'string')
+        .map(message => `${message.name}: ${message.mes}`)
+        .reverse();
+    let result;
+    try {
+        result = await getWorldInfoPrompt(chat, getMaxPromptTokens(), true, {
+            personaDescription: '',
+            characterDescription: '',
+            characterPersonality: '',
+            characterDepthPrompt: '',
+            scenario: '',
+            creatorNotes: '',
+            trigger: 'normal',
+        });
+    } catch (error) {
+        const responseText = String(error?.responseText ?? error?.response?.responseText ?? '');
+        if (Number(error?.status ?? error?.response?.status) === 403 && /csrf/i.test(responseText)) {
+            console.warn('[amy-studio] Prompt scan was unavailable because the page CSRF token expired; the protected active chat entry was verified instead.');
+            return { proof: 'protected-entry' };
+        }
+        let serialized = '';
+        try {
+            serialized = JSON.stringify(error);
+        } catch {
+            // Fall through to the bounded string representation below.
+        }
+        const detail = error?.message ?? error?.error?.message ?? (serialized || String(error));
+        throw new Error(`${tr('studio.error.projectContextNotActive')} (${detail})`);
+    }
+    assertMemorySource(source);
+    if (!result.worldInfoString.includes(expectedContent)) {
+        throw new Error(tr('studio.error.projectContextNotActive'));
+    }
+    return { proof: 'prompt-scan' };
+}
+
+async function prepareStoryProjectChat(project) {
+    const source = { chatId: String(getCurrentChatId() ?? '') };
+    if (!source.chatId) throw new Error(tr('studio.error.openChatProject'));
+    const state = chatState();
+    const sameProject = state.storyProjectId === project.id;
+    const switchingProject = Boolean(state.storyProjectId && !sameProject);
+    const plan = normalizeStoryPlan(project.storyPlan);
+    const profile = project.writingProfileId
+        ? normalizeWritingProfile(settings().writingProfileTemplates.find(item => item.id === project.writingProfileId))
+        : null;
+    if (project.writingProfileId && !profile) throw new Error(tr('studio.error.projectWritingMissing'));
+
+    const progress = plan
+        ? normalizeStoryPlanProgress(sameProject
+            ? { ...state.storyPlanProgress, active: true }
+            : { active: true }, plan)
+        : state.storyPlanProgress;
+    const activePlan = plan ?? (!switchingProject && state.storyPlanProgress?.active ? state.storyPlan : null);
+    const activeProgress = plan
+        ? progress
+        : { ...state.storyPlanProgress, active: switchingProject ? false : state.storyPlanProgress?.active === true };
+    const clearProjectWriting = switchingProject
+        && !profile
+        && state.writingProfileSourceId.startsWith('project:');
+    const activeProfile = profile
+        ?? (!clearProjectWriting && state.writingControlActive ? state.writingProfile : null);
+    const compiled = activeProfile
+        ? compileWritingContext({
+            profile: activeProfile,
+            plan: activeProgress?.active ? activePlan : null,
+            progress: activeProgress,
+            ledger: state.narrativeLedger,
+            expectedSceneWords: state.expectedSceneWords,
+        })
+        : null;
+
+    const expectedContent = compiled?.text ?? (plan ? storyPlanToLoreContent(plan, progress) : '');
+    if (compiled) {
+        await syncActiveContext(expectedContent, source, WRITING_CONTEXT_ENTRY_COMMENT);
+    } else if (plan) {
+        await syncActiveContext(expectedContent, source, STORY_PLAN_ENTRY_COMMENT);
+    } else if (switchingProject) {
+        await syncActiveContext('', source, STORY_PLAN_ENTRY_COMMENT);
+    }
+    assertMemorySource(source);
+    const verification = await verifyActiveWritingContext(expectedContent, source);
+
+    // World Info slash commands can replace chat_metadata; never persist through the stale pre-sync object.
+    const latestState = chatState();
+    latestState.storyProjectId = project.id;
+    if (plan) {
+        latestState.storyPlan = plan;
+        latestState.storyPlanProgress = progress;
+        latestState.pendingPlan = JSON.stringify(plan, null, 2);
+        latestState.pendingPlanOutline = '';
+    } else if (switchingProject) {
+        latestState.storyPlanProgress = activeProgress;
+    }
+    if (profile) {
+        latestState.writingProfile = profile;
+        latestState.pendingWritingProfile = JSON.stringify(profile, null, 2);
+        latestState.writingProfileSourceId = `project:${project.id}`;
+        latestState.writingControlActive = true;
+    } else if (clearProjectWriting) {
+        latestState.writingControlActive = false;
+    }
+    if (compiled) {
+        latestState.compiledWritingContext = compiled;
+    } else if (clearProjectWriting) {
+        latestState.compiledWritingContext = {
+            text: '',
+            reasons: [],
+            exclusions: [],
+            warnings: [],
+            sourceHash: '',
+            estimatedTokens: 0,
+            includesFuture: false,
+        };
+    }
+    const context = plan ? activeStoryPlanContext(plan, progress) : null;
+    latestState.storyPreparationVerification = {
+        projectId: project.id,
+        chapterId: context?.chapter.id ?? '',
+        sceneId: context?.scene?.id ?? '',
+        profileId: profile?.id ?? '',
+        proof: verification.proof,
+        verifiedAt: new Date().toISOString(),
+    };
+    await persistChat({ immediate: true });
+    assertMemorySource(source);
+
+    return {
+        projectId: project.id,
+        planActive: Boolean(plan && progress.active),
+        chapterId: context?.chapter.id ?? '',
+        chapterTitle: context?.chapter.title ?? '',
+        sceneId: context?.scene?.id ?? '',
+        profileId: profile?.id ?? '',
+        writingActive: Boolean(compiled),
+        contextVerified: Boolean(expectedContent),
+        includesFuture: false,
+    };
 }
 
 async function saveReviewedStoryPlan() {
@@ -452,12 +701,17 @@ async function saveReviewedStoryPlan() {
     assertMemorySource(source);
     const state = chatState();
     const progress = normalizeStoryPlanProgress(state.storyPlanProgress, plan);
-    if (progress.active) await syncActiveStoryPlan(plan, progress, source);
+    if (progress.active) await syncActiveStoryPlan(plan, progress, source, state);
     assertMemorySource(source);
-    state.storyPlan = plan;
-    state.storyPlanProgress = progress;
-    state.pendingPlan = JSON.stringify(plan, null, 2);
-    state.pendingPlanOutline = '';
+    const latestState = chatState();
+    latestState.storyPlan = plan;
+    latestState.storyPlanProgress = progress;
+    latestState.pendingPlan = JSON.stringify(plan, null, 2);
+    latestState.pendingPlanOutline = '';
+    if (state.compiledWritingContext?.text) latestState.compiledWritingContext = state.compiledWritingContext;
+    latestState.storyPreparationVerification = {
+        projectId: '', chapterId: '', sceneId: '', profileId: '', verifiedAt: '',
+    };
     await persistChat({ immediate: true });
     appendAudit(settings(), { tool: 'story_plan_save', status: 'approved', summary: `${plan.chapters.length} chapters` });
     persist();
@@ -486,9 +740,24 @@ async function activateStoryPlan() {
         tr(bodyKey, { chapter: context.chapter.title, scene: context.scene?.title ?? tr('studio.plan.noScene') }),
     );
     if (!confirmed) return;
-    await syncActiveStoryPlan(state.storyPlan, progress, source);
+    await syncActiveStoryPlan(state.storyPlan, progress, source, state);
     assertMemorySource(source);
-    state.storyPlanProgress = progress;
+    const expectedContent = state.writingControlActive && state.compiledWritingContext?.text
+        ? state.compiledWritingContext.text
+        : storyPlanToLoreContent(state.storyPlan, progress);
+    const verification = await verifyActiveWritingContext(expectedContent, source);
+    // World Info commands may replace chat_metadata. Persist only through the current object.
+    const latestState = chatState();
+    latestState.storyPlanProgress = progress;
+    if (state.compiledWritingContext?.text) latestState.compiledWritingContext = state.compiledWritingContext;
+    latestState.storyPreparationVerification = {
+        projectId: latestState.storyProjectId,
+        chapterId: context.chapter.id,
+        sceneId: context.scene?.id ?? '',
+        profileId: latestState.writingControlActive ? latestState.writingProfile?.id ?? '' : '',
+        proof: verification.proof,
+        verifiedAt: new Date().toISOString(),
+    };
     await persistChat({ immediate: true });
     appendAudit(settings(), { tool: 'story_plan_activate', status: 'approved', summary: `${progress.chapterId}/${progress.sceneId || '-'}` });
     persist();
@@ -510,9 +779,14 @@ async function deactivateStoryPlan() {
     const confirmed = await Popup.show.confirm(tr('studio.popup.deactivatePlanTitle'), tr(bodyKey));
     if (!confirmed) return;
     const progress = { ...state.storyPlanProgress, active: false };
-    await syncActiveStoryPlan(state.storyPlan, progress, source);
+    await syncActiveStoryPlan(state.storyPlan, progress, source, state);
     assertMemorySource(source);
-    state.storyPlanProgress = progress;
+    const latestState = chatState();
+    latestState.storyPlanProgress = progress;
+    if (state.compiledWritingContext?.text) latestState.compiledWritingContext = state.compiledWritingContext;
+    latestState.storyPreparationVerification = {
+        projectId: '', chapterId: '', sceneId: '', profileId: '', verifiedAt: '',
+    };
     await persistChat({ immediate: true });
     appendAudit(settings(), { tool: 'story_plan_deactivate', status: 'approved', summary: progress.chapterId });
     persist();
@@ -778,6 +1052,7 @@ function renderSettings() {
     renderStoryPlanSelectors();
     renderAudit();
     writingController?.render();
+    projectController?.render();
 }
 
 function setBusy(button, busy) {
@@ -799,6 +1074,17 @@ function bindAction(selector, action) {
     });
 }
 
+function validateCharacterDraft(value) {
+    try {
+        return validateStudioDraft(value);
+    } catch (error) {
+        if (error?.message === 'The model response did not contain a JSON object.') {
+            throw new Error(tr('studio.error.characterJsonMissing'));
+        }
+        throw error;
+    }
+}
+
 function createPanel() {
     if ($('#amy-creator-studio').length) return;
     const panel = $(`
@@ -810,6 +1096,7 @@ function createPanel() {
             <div class="inline-drawer-content">
                 <small data-i18n="amyCreatorStudio.studio.subtitle">Codex-powered character authoring, consistent visual assets, reviewed memory, and confirmation-gated tools.</small>
                 <div class="amy-studio-tabs flex-container">
+                    ${storyProjectTabMarkup()}
                     <button class="menu_button amy-studio-tab" data-tab="character" data-i18n="amyCreatorStudio.studio.tab.character">Character</button>
                     <button class="menu_button amy-studio-tab" data-tab="assets" data-i18n="amyCreatorStudio.studio.tab.assets">Assets</button>
                     <button class="menu_button amy-studio-tab" data-tab="plan" data-i18n="amyCreatorStudio.studio.tab.plan">Story plan</button>
@@ -817,7 +1104,9 @@ function createPanel() {
                     <button class="menu_button amy-studio-tab" data-tab="memory" data-i18n="amyCreatorStudio.studio.tab.memory">Memory</button>
                     <button class="menu_button amy-studio-tab" data-tab="tools" data-i18n="amyCreatorStudio.studio.tab.tools">Safe tools</button>
                 </div>
+                ${storyProjectMarkup()}
                 <section data-amy-tab="character">
+                    <small data-i18n="amyCreatorStudio.studio.character.associationNote">This tab creates or imports a new character card. To associate an existing character, use Novel Project, choose the character, then save the project.</small>
                     <label><span data-i18n="amyCreatorStudio.studio.character.idea">Character idea</span><textarea id="amy-studio-idea" class="text_pole" rows="4" placeholder="Describe the character, relationship, setting, tone, and boundaries." data-i18n="[placeholder]amyCreatorStudio.studio.character.ideaPlaceholder"></textarea></label>
                     <div class="flex-container"><button id="amy-studio-generate" class="menu_button" data-i18n="amyCreatorStudio.studio.character.generate">Generate draft</button><button id="amy-studio-validate" class="menu_button" data-i18n="amyCreatorStudio.studio.character.validate">Validate</button><button id="amy-studio-import" class="menu_button" data-i18n="amyCreatorStudio.studio.character.import">Import character + lorebook</button></div>
                     <label><span data-i18n="amyCreatorStudio.studio.character.draft">Reviewable Character Card V3 draft</span><textarea id="amy-studio-draft" class="text_pole monospace" rows="14"></textarea></label>
@@ -832,14 +1121,20 @@ function createPanel() {
                     <small data-i18n="amyCreatorStudio.studio.assets.note">Portraits go to chat/gallery; expressions are installed as sprites; backgrounds are uploaded and selected immediately.</small>
                 </section>
                 <section data-amy-tab="plan" class="displayNone">
+                    <div id="amy-studio-plan-focus" class="amy-studio-ready-panel">
+                    <h4 data-i18n="amyCreatorStudio.studio.plan.focusHeading">Current writing focus</h4>
+                    <label><span data-i18n="amyCreatorStudio.studio.plan.chapter">Current chapter</span><select id="amy-studio-plan-chapter" class="text_pole"></select></label>
+                    <label><span data-i18n="amyCreatorStudio.studio.plan.scene">Current scene</span><select id="amy-studio-plan-scene" class="text_pole"></select></label>
+                    <div class="flex-container"><button id="amy-studio-plan-activate" class="menu_button" data-i18n="amyCreatorStudio.studio.plan.activate">Confirm and activate selected focus</button><button id="amy-studio-plan-deactivate" class="menu_button" data-i18n="amyCreatorStudio.studio.plan.deactivate">Deactivate plan</button></div>
+                    <small id="amy-studio-plan-status"></small>
+                    <small data-i18n="amyCreatorStudio.studio.plan.note">Only the selected chapter and scene are added to the writing context. Future chapters stay hidden, and the plan is never treated as established canon.</small>
+                    </div>
+                    <details>
+                    <summary data-i18n="amyCreatorStudio.studio.plan.editPlan">Create or edit the full Story Plan</summary>
                     <label><span data-i18n="amyCreatorStudio.studio.plan.outline">Existing outline (Markdown or Story Plan JSON)</span><textarea id="amy-studio-plan-outline" class="text_pole monospace" rows="8" placeholder="Paste the novel premise and chapter outline here." data-i18n="[placeholder]amyCreatorStudio.studio.plan.outlinePlaceholder"></textarea></label>
                     <div class="flex-container"><button id="amy-studio-plan-generate" class="menu_button" data-i18n="amyCreatorStudio.studio.plan.generate">Prepare structured plan</button><button id="amy-studio-plan-save" class="menu_button" data-i18n="amyCreatorStudio.studio.plan.save">Save reviewed plan</button></div>
                     <label><span data-i18n="amyCreatorStudio.studio.plan.draft">Reviewable Story Plan draft</span><textarea id="amy-studio-plan-draft" class="text_pole monospace" rows="14"></textarea></label>
-                    <label><span data-i18n="amyCreatorStudio.studio.plan.chapter">Current chapter</span><select id="amy-studio-plan-chapter" class="text_pole"></select></label>
-                    <label><span data-i18n="amyCreatorStudio.studio.plan.scene">Current scene</span><select id="amy-studio-plan-scene" class="text_pole"></select></label>
-                    <div class="flex-container"><button id="amy-studio-plan-activate" class="menu_button" data-i18n="amyCreatorStudio.studio.plan.activate">Activate selected focus</button><button id="amy-studio-plan-deactivate" class="menu_button" data-i18n="amyCreatorStudio.studio.plan.deactivate">Deactivate plan</button></div>
-                    <small id="amy-studio-plan-status"></small>
-                    <small data-i18n="amyCreatorStudio.studio.plan.note">Only the selected chapter and scene are added to the writing context. Future chapters stay hidden, and the plan is never treated as established canon.</small>
+                    </details>
                 </section>
                 ${writingControlMarkup()}
                 <section data-amy-tab="memory" class="displayNone">
@@ -861,12 +1156,20 @@ function createPanel() {
         </div>`);
     $('#extensions_settings2').prepend(panel);
 
-    $('.amy-studio-tab').on('click', function () {
+    $('.amy-studio-tab').on('click', async function () {
         const tab = $(this).data('tab');
         $('[data-amy-tab]').addClass('displayNone');
         $(`[data-amy-tab="${tab}"]`).removeClass('displayNone');
         $('.amy-studio-tab').removeClass('selected');
         $(this).addClass('selected');
+        if (tab === 'project') {
+            try {
+                await getCharacters();
+            } catch (error) {
+                console.error('[amy-studio] Failed to refresh characters', error);
+            }
+            projectController?.render();
+        }
     });
     $('.amy-studio-tab[data-tab="character"]').addClass('selected');
     $('#amy-studio-idea, #amy-studio-draft, #amy-studio-visual-anchor, #amy-studio-visual-style, #amy-studio-asset-detail').on('input', function () {
@@ -920,7 +1223,7 @@ function createPanel() {
         const state = settings();
         if (!state.idea.trim()) throw new Error(tr('studio.error.describeCharacter'));
         const raw = await codexText(creatorPrompt(state.idea));
-        const result = validateStudioDraft(raw);
+        const result = validateCharacterDraft(raw);
         if (!result.valid) throw new Error(tr('studio.error.generatedValidation', { errors: translateStudioValidationErrors(result.errors).join('\n') }));
         state.draft = JSON.stringify(result.draft, null, 2);
         state.visualAnchor = result.draft.visual.anchor;
@@ -930,7 +1233,7 @@ function createPanel() {
         toastr.success(tr('studio.toast.draftGenerated'), tr('studio.error.actionTitle'));
     });
     bindAction('#amy-studio-validate', async () => {
-        const result = validateStudioDraft($('#amy-studio-draft').val());
+        const result = validateCharacterDraft($('#amy-studio-draft').val());
         if (!result.valid) throw new Error(translateStudioValidationErrors(result.errors).join('\n'));
         settings().draft = JSON.stringify(result.draft, null, 2);
         persist();
@@ -970,6 +1273,48 @@ function createPanel() {
         assertSource: assertMemorySource,
         renderParent: renderSettings,
     });
+    projectController = bindStoryProject({
+        getSettings: settings,
+        getChatState: chatState,
+        getChatId: () => String(getCurrentChatId() ?? ''),
+        getCurrentCharacter: () => characters[this_chid] ?? null,
+        getCharacters: () => characters,
+        getGroups: () => groups,
+        getCurrentStory: () => ({
+            title: String(getCurrentChatId() ?? ''),
+            character: characters[this_chid]?.name ?? '',
+            ownerId: currentStoryReference().ownerId,
+        }),
+        getWorldNames: () => getContext().getWorldInfoNames(),
+        getWorldInfo: loadWorldInfo,
+        refreshCharacters: getCharacters,
+        refreshWorlds: updateWorldInfoList,
+        getRequestHeaders,
+        getPlan: () => chatState().storyPlan,
+        setPlanDraft: plan => { chatState().pendingPlan = JSON.stringify(plan, null, 2); },
+        persistSettings: persist,
+        persistChat,
+        prepareCurrentChat: prepareStoryProjectChat,
+        getGenerationReadiness: currentGenerationReadiness,
+        setExpectedSceneWords: async words => {
+            chatState().expectedSceneWords = words;
+            await persistChat({ immediate: true });
+        },
+        isWritingContextFresh: currentWritingContextIsFresh,
+        applyRecommendedGenerationCapacity,
+        getCurrentSceneRequest: currentSceneWritingRequest,
+        stageCurrentSceneRequest: stageCurrentSceneWritingRequest,
+        getCurrentModel: currentModel,
+        recordAudit: (tool, summary) => {
+            appendAudit(settings(), { tool, status: 'approved', summary });
+            persist();
+            renderAudit();
+        },
+        bindAction,
+        renderParent: renderSettings,
+    });
+    $('#openai_max_context, #openai_max_tokens, #world_info_budget, #world_info_budget_cap')
+        .on('input.amy-studio-readiness change.amy-studio-readiness', () => projectController?.render());
     renderSettings();
 }
 

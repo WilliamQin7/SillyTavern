@@ -602,6 +602,13 @@ export function compileWritingContext({
         for (const item of (scene.constraints ?? []).slice(0, 6)) intentLines.push('Scene constraint: ' + item.slice(0, 240));
     }
     if (chapter || scene) intentLines.push('These are author intentions, not events that already occurred.');
+    const readinessLines = chapter || scene
+        ? [
+            'The current chapter and scene focus below has been reviewed and enabled for drafting.',
+            'When the user asks to write using the current focus, proceed from this context without requesting the same focus fields again.',
+            'An empty reviewed Story State means that no earlier story events have become canon yet; it does not mean that the writing focus is missing.',
+        ]
+        : [];
 
     const overrides = { ...(chapter?.targetOverrides ?? {}), ...(scene?.targetOverrides ?? {}) };
     const ruleDirectionLines = selected.map(item => ({ id: item.rule.id, text: item.rule.instruction }));
@@ -669,6 +676,7 @@ export function compileWritingContext({
         .slice(0, 2);
     const requiredSections = [
         section('WRITING CONTRACT', contractLines),
+        section('ACTIVE WRITING READINESS', readinessLines),
         section('CURRENT AUTHOR INTENT — NOT CANON', intentLines),
         section('REFERENCE REALIZATION POLICY', portrayalLines),
     ].filter(Boolean);
@@ -693,6 +701,7 @@ export function compileWritingContext({
     }
     const baseSections = [
         section('WRITING CONTRACT', contractLines),
+        section('ACTIVE WRITING READINESS', readinessLines),
         section('CURRENT AUTHOR INTENT — NOT CANON', intentLines),
         section('ACTIVE PROSE DIRECTIONS', includedDirections),
         section('REFERENCE REALIZATION POLICY', portrayalLines),
@@ -789,4 +798,21 @@ export function writingCriticPrompt(prose, profileValue, compiledContext = '') {
         + 'RULE IDS\n' + JSON.stringify(ruleIds) + '\n\n'
         + 'COMPILED WRITING CONTEXT\n' + text(compiledContext, 6000) + '\n\n'
         + 'PROSE TO REVIEW\n' + text(prose, 20000);
+}
+
+export function buildCurrentSceneWritingRequest(value = {}) {
+    const chapterTitle = text(value.chapterTitle, 300);
+    const sceneTitle = text(value.sceneTitle, 300);
+    const language = text(value.language, 120) || 'the language required by the active Writing Profile';
+    const expectedSceneWords = Math.min(5000, Math.max(200, Math.round(number(value.expectedSceneWords)) || 1100));
+    const focus = [chapterTitle, sceneTitle].filter(Boolean).join(' / ') || 'the active chapter and scene';
+    return [
+        'Write the currently active scene as finished novel prose.',
+        `Active focus: ${focus}.`,
+        `Write in ${language}, targeting approximately ${expectedSceneWords} words or Chinese characters as appropriate for that language.`,
+        'Use the active project context, Writing Profile, reviewed story state, and recent prose. Treat the current chapter and scene plan as author intent, not as events that already happened.',
+        'Do not ask me to repeat the focus, POV, location, cast, or target length when they are already present in the active context.',
+        'Output only the prose. Do not include planning notes, explanations, JSON, headings, or a recap.',
+        'If the response limit cannot hold the whole target, stop at a natural scene beat without summarizing the unwritten remainder.',
+    ].join('\n');
 }

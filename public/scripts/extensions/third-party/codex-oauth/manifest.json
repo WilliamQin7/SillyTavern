@@ -10,7 +10,7 @@
         "zh-tw": "locales/zh-tw.json"
     },
     "author": "SillyTavern Codex OAuth Provider contributors",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "homePage": "https://github.com/SillyTavern/SillyTavern",
     "hooks": {
         "activate": "init"

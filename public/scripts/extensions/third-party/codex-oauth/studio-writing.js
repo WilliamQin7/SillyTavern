@@ -365,14 +365,13 @@ export function bindWritingControl(deps) {
         });
     }
 
-    function compile(profile = null, useSelectedFocus = true) {
-        const state = getChatState();
+    function compile(profile = null, useSelectedFocus = true, state = getChatState()) {
         const reviewed = profile ?? normalizeWritingProfile(currentDraft(state)) ?? state.writingProfile;
         if (!reviewed) throw new Error(tr('studio.error.writingInvalid'));
         const includePlan = useSelectedFocus || state.storyPlanProgress?.active === true;
         return compileWritingContext({
             profile: reviewed,
-            plan: includePlan ? getPlan() : null,
+            plan: includePlan ? state.storyPlan : null,
             progress: useSelectedFocus ? getSelectedProgress(true) : state.storyPlanProgress,
             ledger: state.narrativeLedger,
             expectedSceneWords: state.expectedSceneWords,
@@ -505,6 +504,7 @@ export function bindWritingControl(deps) {
         state.expectedSceneWords = Math.min(5000, Math.max(200, Number($(this).val()) || 1100));
         $(this).val(state.expectedSceneWords);
         persistChat();
+        deps.renderParent();
     });
 
     bindAction('#amy-studio-writing-default', async () => {
@@ -545,7 +545,7 @@ export function bindWritingControl(deps) {
         state.writingProfile = result.profile;
         state.pendingWritingProfile = JSON.stringify(result.profile, null, 2);
         if (state.writingControlActive) {
-            const compiled = compile(result.profile, false);
+            const compiled = compile(result.profile, false, state);
             await syncWritingContext(compiled.text, source);
             assertSource(source);
             state.compiledWritingContext = compiled;
@@ -566,7 +566,7 @@ export function bindWritingControl(deps) {
         if (!state.writingProfile) throw new Error(tr('studio.error.writingSaveFirst'));
         const source = { chatId: deps.getChatId() };
         if (!source.chatId) throw new Error(tr('studio.error.openChatWriting'));
-        const compiled = compile(state.writingProfile);
+        const compiled = compile(state.writingProfile, true, state);
         const confirmed = await Popup.show.confirm(
             tr('studio.popup.activateWritingTitle'),
             tr(deps.isCheckpoint()

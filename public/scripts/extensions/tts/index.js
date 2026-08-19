@@ -40,6 +40,7 @@ import { ElectronHubTtsProvider } from './electronhub.js';
 import { ChutesTtsProvider } from './chutes.js';
 import { VolcengineTtsProvider } from './volcengine.js';
 import { getTtsPlaybackControlState, TTS_PLAYBACK_ACTION, TtsPlaybackSession } from './playback-session.js';
+import { shouldForceNarrateCharacterGreeting } from './auto-narration.js';
 import { applyLocale, t } from '/scripts/i18n.js';
 
 const UPDATE_INTERVAL = 1000;
@@ -1019,6 +1020,7 @@ function loadSettings() {
     $('#tts_narrate_dialogues').prop('checked', extension_settings.tts.narrate_dialogues_only);
     $('#tts_narrate_quoted').prop('checked', extension_settings.tts.narrate_quoted_only);
     $('#tts_auto_generation').prop('checked', extension_settings.tts.auto_generation);
+    $('#tts_narrate_character_greetings').prop('checked', extension_settings.tts.narrate_character_greetings);
     $('#tts_periodic_auto_generation').prop('checked', extension_settings.tts.periodic_auto_generation);
     $('#tts_narrate_by_paragraphs').prop('checked', extension_settings.tts.narrate_by_paragraphs);
     $('#tts_narrate_translated_only').prop('checked', extension_settings.tts.narrate_translated_only);
@@ -1043,6 +1045,8 @@ const defaultSettings = {
     ttsEnabled: false,
     currentProvider: 'ElevenLabs',
     auto_generation: true,
+    // Keep the previous behavior for existing users while allowing greetings to be disabled independently.
+    narrate_character_greetings: true,
     narrate_user: false,
     playback_rate: 1,
     multi_voice_enabled: false,
@@ -1089,6 +1093,11 @@ function onEnableClick() {
 
 function onAutoGenerationClick() {
     extension_settings.tts.auto_generation = !!$('#tts_auto_generation').prop('checked');
+    saveSettingsDebounced();
+}
+
+function onNarrateCharacterGreetingsClick() {
+    extension_settings.tts.narrate_character_greetings = !!$('#tts_narrate_character_greetings').prop('checked');
     saveSettingsDebounced();
 }
 
@@ -1255,12 +1264,17 @@ async function onMessageEvent(messageId, lastCharIndex) {
     }
 
     // Chat changed
-    if (context.chatId !== lastChatId) {
+    const chatChanged = context.chatId !== lastChatId;
+    if (chatChanged) {
         lastChatId = context.chatId;
         lastMessageHash = getStringHash(context.chat[messageId]?.mes ?? '');
 
-        // Force to speak on the first message in the new chat
-        if (context.chat.length === 1) {
+        // Force the first character greeting only when its dedicated setting is enabled.
+        if (shouldForceNarrateCharacterGreeting({
+            chatChanged,
+            chatLength: context.chat.length,
+            narrateCharacterGreetings: extension_settings.tts.narrate_character_greetings,
+        })) {
             lastMessageHash = -1;
         }
     }
@@ -1682,6 +1696,7 @@ export async function init() {
         $('#tts_skip_tags').on('click', onSkipTagsClick);
         $('#tts_pass_asterisks').on('click', onPassAsterisksClick);
         $('#tts_auto_generation').on('click', onAutoGenerationClick);
+        $('#tts_narrate_character_greetings').on('click', onNarrateCharacterGreetingsClick);
         $('#tts_periodic_auto_generation').on('click', onPeriodicAutoGenerationClick);
         $('#tts_narrate_by_paragraphs').on('click', onNarrateByParagraphsClick);
         $('#tts_narrate_user').on('click', onNarrateUserClick);
