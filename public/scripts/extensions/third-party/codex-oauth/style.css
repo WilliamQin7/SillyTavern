@@ -37,3 +37,9 @@
 .amy-studio textarea { width: 100%; resize: vertical; }
 .amy-studio .monospace, .amy-studio-audit { font-family: var(--monoFontFamily, monospace); }
 .amy-studio-audit { max-height: 12rem; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.amy-studio-writing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.65rem; }
+.amy-studio-writing-grid label { min-width: 0; }
+.amy-studio-file-button { position: relative; overflow: hidden; cursor: pointer; }
+.amy-studio-file-button input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; }
+.amy-studio-writing-preview { max-height: 24rem; }
+.amy-studio-writing-meta { color: var(--SmartThemeEmColor); font-size: 0.9em; overflow-wrap: anywhere; }

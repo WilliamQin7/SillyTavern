@@ -1,3 +1,5 @@
+import { normalizeNarrativeLedgerDelta } from './studio-writing-core.js';
+
 export const STUDIO_SCHEMA = 'amy_creator_studio_v1';
 export const STORY_STATE_SCHEMA = 'amy_story_state_v1';
 export const STORY_STATE_ENTRY_COMMENT = 'Amy Story State v1';
@@ -283,6 +285,7 @@ export function normalizeMemoryEnvelope(value, fallbackSource = {}) {
         source: normalizeMemorySource(draft?.source ?? fallbackSource),
         memories: normalizeMemoryDraft(draft),
         storyState: normalizeStoryState(draft?.storyState ?? draft?.story_state),
+        narrativeLedgerDelta: normalizeNarrativeLedgerDelta(draft?.narrativeLedgerDelta ?? draft?.narrative_ledger_delta),
     };
 }
 
@@ -371,6 +374,26 @@ function planStrings(value, limit = 20) {
     return items.map(item => item.slice(0, 500)).slice(0, limit);
 }
 
+function planTags(value) {
+    return planStrings(value, 30).map(item => item.slice(0, 80).toLowerCase());
+}
+
+function planIds(value) {
+    return planTags(value).filter(item => /^[a-z0-9][a-z0-9_-]{0,79}$/.test(item));
+}
+
+function planTargetOverrides(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).slice(0, 20).flatMap(([metric, range]) => {
+        const key = boundedString(metric, 80);
+        if (!/^[a-z0-9][a-z0-9_-]{0,79}$/.test(key) || !Array.isArray(range) || range.length !== 2) return [];
+        const min = Number(range[0]);
+        const max = Number(range[1]);
+        if (!Number.isFinite(min) || !Number.isFinite(max) || min < 0 || max > 1 || min > max) return [];
+        return [[key, [min, max]]];
+    }));
+}
+
 export function normalizeStoryPlan(value) {
     let input;
     try {
@@ -393,6 +416,11 @@ export function normalizeStoryPlan(value) {
                     summary: boundedString(scene?.summary, 2000),
                     goals: planStrings(scene?.goals),
                     constraints: planStrings(scene?.constraints),
+                    tags: planTags(scene?.tags),
+                    styleRuleIds: planIds(scene?.styleRuleIds ?? scene?.style_rule_ids),
+                    disabledStyleRuleIds: planIds(scene?.disabledStyleRuleIds ?? scene?.disabled_style_rule_ids),
+                    targetOverrides: planTargetOverrides(scene?.targetOverrides ?? scene?.target_overrides),
+                    portrayalTriggers: planIds(scene?.portrayalTriggers ?? scene?.portrayal_triggers),
                 }));
             return {
                 id: chapterId,
@@ -400,6 +428,11 @@ export function normalizeStoryPlan(value) {
                 summary: boundedString(chapter?.summary, 3000),
                 goals: planStrings(chapter?.goals, 50),
                 constraints: planStrings(chapter?.constraints, 50),
+                tags: planTags(chapter?.tags),
+                styleRuleIds: planIds(chapter?.styleRuleIds ?? chapter?.style_rule_ids),
+                disabledStyleRuleIds: planIds(chapter?.disabledStyleRuleIds ?? chapter?.disabled_style_rule_ids),
+                targetOverrides: planTargetOverrides(chapter?.targetOverrides ?? chapter?.target_overrides),
+                portrayalTriggers: planIds(chapter?.portrayalTriggers ?? chapter?.portrayal_triggers),
                 scenes,
             };
         });
@@ -514,10 +547,16 @@ export function memoryPrompt(messages) {
 }
 
 export function storyPlanPrompt(outline) {
-    return `Convert the supplied novel outline into a compact, reviewable writing plan. Return JSON only as {"schema":"${STORY_PLAN_SCHEMA}","title":"","premise":"","styleGuide":[],"chapters":[{"id":"chapter-1","title":"","summary":"","goals":[],"constraints":[],"scenes":[{"id":"chapter-1-scene-1","title":"","summary":"","goals":[],"constraints":[]}]}]}. Preserve the author's intended chapter order and meaning. Do not invent new plot turns, resolutions, facts, or scenes. Use stable lowercase ASCII IDs. Put events that must happen in goals and events that must not happen yet in constraints. Empty scenes are allowed when the outline only specifies chapter-level direction. Do not include markdown fences.\n\nOUTLINE\n${String(outline)}`;
+    return `Convert the supplied novel outline into a compact, reviewable writing plan. Return JSON only as {"schema":"${STORY_PLAN_SCHEMA}","title":"","premise":"","styleGuide":[],"chapters":[{"id":"chapter-1","title":"","summary":"","goals":[],"constraints":[],"tags":[],"styleRuleIds":[],"disabledStyleRuleIds":[],"targetOverrides":{},"portrayalTriggers":[],"scenes":[{"id":"chapter-1-scene-1","title":"","summary":"","goals":[],"constraints":[],"tags":[],"styleRuleIds":[],"disabledStyleRuleIds":[],"targetOverrides":{},"portrayalTriggers":[]}]}]}. Preserve the author's intended chapter order and meaning. Do not invent new plot turns, resolutions, facts, or scenes. Use stable lowercase ASCII IDs. Put events that must happen in goals and events that must not happen yet in constraints. Only add tags or writing-control IDs when they are directly supported by the supplied outline; otherwise leave them empty. Empty scenes are allowed when the outline only specifies chapter-level direction. Do not include markdown fences.\n\nOUTLINE\n${String(outline)}`;
 }
 
-export function sceneMemoryPrompt(messages, currentStoryState = null) {
+export function sceneMemoryPrompt(messages, currentStoryState = null, currentLedger = null, writingProfile = null, currentFocus = null) {
     const current = normalizeStoryState(currentStoryState);
-    return `Close the completed story scene in the transcript below. Return JSON only as {"memories":[{"title":"","content":"standalone third-person memory","keys":["trigger"],"kind":"fact|event|relationship|goal|state","importance":1}],"storyState":{"schema":"${STORY_STATE_SCHEMA}","scene":{"summary":"","time":"","location":"","presentCharacters":[]},"characters":[{"name":"","status":"","goal":"","location":"","inventory":[],"knowledge":[]}],"relationships":[{"from":"","to":"","state":"","lastChange":""}],"openThreads":[{"title":"","detail":"","status":"open|resolved","keys":[]}],"canon":[{"content":"","keys":[]}],"authorPlans":[]}}. The first memory must be a concise chronological scene summary with kind=event and importance=5. Add only durable changes to character state, directional relationships, knowledge, promises, goals, inventory, location, and unresolved story threads. Keep every additional memory atomic and standalone. storyState must be the complete current snapshot: retain still-valid items from the previous reviewed state, apply only changes supported by the transcript, and keep it compact. Record only events that occurred in the transcript; never turn speculation or future plot plans into facts. Never create authorPlans from dialogue or narration; preserve existing authorPlans exactly unless the user edited them in the reviewed draft. Use at most 12 memories and omit unchanged details.\n\nPREVIOUS REVIEWED STORY STATE\n${current ? JSON.stringify(current) : 'None'}\n\nTRANSCRIPT\n${String(messages)}`;
+    const ledger = currentLedger && typeof currentLedger === 'object' && currentLedger.stale !== true ? currentLedger : null;
+    const profile = writingProfile && typeof writingProfile === 'object' ? writingProfile : null;
+    const controls = profile ? {
+        portrayalPolicyIds: (profile.portrayalPolicies ?? []).map(item => item.id).filter(Boolean),
+        writingRuleIds: (profile.rules ?? []).map(item => item.id).filter(Boolean),
+    } : null;
+    return `Close the completed story scene in the transcript below. Return JSON only as {"memories":[{"title":"","content":"standalone third-person memory","keys":["trigger"],"kind":"fact|event|relationship|goal|state","importance":1}],"storyState":{"schema":"${STORY_STATE_SCHEMA}","scene":{"summary":"","time":"","location":"","presentCharacters":[]},"characters":[{"name":"","status":"","goal":"","location":"","inventory":[],"knowledge":[]}],"relationships":[{"from":"","to":"","state":"","lastChange":""}],"openThreads":[{"title":"","detail":"","status":"open|resolved","keys":[]}],"canon":[{"content":"","keys":[]}],"authorPlans":[]},"narrativeLedgerDelta":{"sceneIndex":null,"chapterId":"","metrics":{"words":0,"dialogueWords":0,"actionWords":0,"interiorityWords":0},"factMentions":{"policy-id":{"lastSceneIndex":-1,"countInCurrentScene":0,"countInChapter":0}},"ruleApplications":{"rule-id":{"lastSceneIndex":-1,"countInCurrentScene":0,"countInChapter":0}},"recentMotifs":[{"text":"","lastSceneIndex":-1}],"recentPhrases":[{"text":"","lastSceneIndex":-1}]}}. The first memory must be a concise chronological scene summary with kind=event and importance=5. Add only durable changes to character state, directional relationships, knowledge, promises, goals, inventory, location, and unresolved story threads. Keep every additional memory atomic and standalone. storyState must be the complete current snapshot: retain still-valid items from the previous reviewed state, apply only changes supported by the transcript, and keep it compact. Record only events that occurred in the transcript; never turn speculation or future plot plans into facts. Never create authorPlans from dialogue or narration; preserve existing authorPlans exactly unless the user edited them in the reviewed draft. narrativeLedgerDelta is a review draft, not canon: estimate only this completed scene, use only listed policy/rule IDs that were actually realized, omit empty placeholder IDs, and list at most 8 prominent repeated motifs or phrases. Use at most 12 memories and omit unchanged details.\n\nCURRENT PLAN FOCUS\n${currentFocus ? JSON.stringify(currentFocus) : 'None'}\n\nAVAILABLE WRITING CONTROL IDS\n${controls ? JSON.stringify(controls) : 'None'}\n\nPREVIOUS REVIEWED NARRATIVE LEDGER\n${ledger ? JSON.stringify(ledger) : 'None'}\n\nPREVIOUS REVIEWED STORY STATE\n${current ? JSON.stringify(current) : 'None'}\n\nTRANSCRIPT\n${String(messages)}`;
 }

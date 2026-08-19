@@ -116,10 +116,18 @@ test('memory drafts retain their source chat and reject cross-chat saves', () =>
     const draft = normalizeMemoryEnvelope({
         source: { chatId: 'chapter-1', startMessageId: 4, endMessageId: 9, messageCount: 6 },
         memories: [{ title: 'Map', content: 'Mira found a map.', keys: ['map'] }],
+        narrativeLedgerDelta: {
+            sceneIndex: 2,
+            chapterId: 'chapter-1',
+            metrics: { words: 500, dialogueWords: 200 },
+            recentMotifs: [{ text: 'rain' }],
+        },
     });
     assert.deepEqual(draft.source, { chatId: 'chapter-1', startMessageId: 4, endMessageId: 9, messageCount: 6 });
     assert.equal(memorySourceMatchesChat(draft.source, 'chapter-1'), true);
     assert.equal(memorySourceMatchesChat(draft.source, 'chapter-2'), false);
+    assert.equal(draft.narrativeLedgerDelta.metrics.words, 500);
+    assert.deepEqual(draft.narrativeLedgerDelta.recentMotifs.map(item => item.text), ['rain']);
     assert.deepEqual(normalizeMemoryEnvelope({ source: { chatId: 'chapter-1' }, memories: [] }).source, {
         chatId: 'chapter-1', startMessageId: null, endMessageId: null, messageCount: 0,
     });
@@ -148,6 +156,12 @@ test('scene close prompt separates occurred events from future plans', () => {
     assert.match(prompt, /unresolved story threads/i);
     assert.match(prompt, /preserve existing authorPlans exactly/i);
     assert.match(prompt, /Reveal the false map later/);
+    const stalePrompt = sceneMemoryPrompt('Mira: We made it home.', previous, {
+        stale: true,
+        recentMotifs: [{ text: 'stale-secret-motif', lastSceneIndex: 4 }],
+    });
+    assert.doesNotMatch(stalePrompt, /stale-secret-motif/);
+    assert.match(stalePrompt, /PREVIOUS REVIEWED NARRATIVE LEDGER\nNone/);
 });
 
 test('story state normalization separates canon, plans, and directional relationships', () => {
@@ -181,7 +195,13 @@ test('Story Plan normalizes stable chapter and scene focus without requiring the
         chapters: [
             {
                 id: 'arrival', title: 'Arrival', summary: 'Mira reaches port.', goals: ['Meet Ivo'],
-                scenes: [{ id: 'interview', title: 'Interview', summary: 'Question Ivo.', constraints: ['Do not reveal the maker'] }],
+                tags: ['mystery'], style_rule_ids: ['emotion-through-action'],
+                target_overrides: { dialogue_word_share: [0.4, 0.55], invalid: [0.8, 0.2] },
+                scenes: [{
+                    id: 'interview', title: 'Interview', summary: 'Question Ivo.', constraints: ['Do not reveal the maker'],
+                    tags: ['dialogue'], disabledStyleRuleIds: ['lyrical-weather'],
+                    portrayal_triggers: ['stable-appearance'],
+                }],
             },
             { id: 'arrival', title: 'Revelation', summary: 'The maker is revealed.', scenes: [] },
         ],
@@ -193,6 +213,11 @@ test('Story Plan normalizes stable chapter and scene focus without requiring the
     const context = activeStoryPlanContext(plan, progress);
     assert.equal(context.chapter.title, 'Arrival');
     assert.equal(context.scene.title, 'Interview');
+    assert.deepEqual(context.chapter.tags, ['mystery']);
+    assert.deepEqual(context.chapter.styleRuleIds, ['emotion-through-action']);
+    assert.deepEqual(context.chapter.targetOverrides, { dialogue_word_share: [0.4, 0.55] });
+    assert.deepEqual(context.scene.disabledStyleRuleIds, ['lyrical-weather']);
+    assert.deepEqual(context.scene.portrayalTriggers, ['stable-appearance']);
     assert.equal(storyPlanToLoreContent(plan, { ...progress, active: false }), '');
     const lore = storyPlanToLoreContent(plan, progress);
     assert.match(lore, /Current chapter — Arrival/);

@@ -54,6 +54,8 @@ database.
 For the end-to-end novel workflow, JSON field semantics, Agent constraints,
 branch isolation, and failure recovery, see
 [`CREATOR_STUDIO_WORKFLOW.md`](./CREATOR_STUDIO_WORKFLOW.md).
+Agents that need one self-contained, executable runbook should read
+[`WRITING_CONTROL_AGENT_GUIDE.md`](./WRITING_CONTROL_AGENT_GUIDE.md) first.
 
 The connection panel, Creator Studio controls, confirmations, validation
 messages, and notifications follow SillyTavern's selected interface language.
@@ -139,6 +141,34 @@ Timelines extension. **Create checkpoint** confirms and runs SillyTavern's
 native checkpoint command on the latest message; Timelines can then display
 the branch. Creator Studio does not maintain a second automatic plot graph
 whose nodes could drift away from edited or branched chats.
+
+### Writing control
+
+The optional **Writing control** tab adds a reviewed
+`amy_writing_profile_v1` snapshot for each chat. A simple editor covers
+language, POV, tense, narrative distance, hard rules, prose preferences,
+dialogue ranges, stable-appearance suppression, cooldown, and a short style
+example. Advanced JSON supports tags, priorities, portrayal
+triggers, and target overrides. Profiles can be imported, exported, or saved
+as reusable local templates; applying a template copies a snapshot so later
+template edits do not silently alter an existing story.
+
+The deterministic compiler combines only the reviewed Profile, selected
+chapter/scene, and reviewed Narrative Ledger. Context Inspector shows the
+exact text, token count, source hash, selected rules, exclusions, warnings,
+and confirms that future chapters are absent. Activation replaces the legacy
+active Story Plan entry with one `Amy Active Writing Context v1` entry.
+Without an active Profile, the previous Story Plan behavior remains unchanged.
+
+Scene close drafts now include an editable `narrativeLedgerDelta` for accepted
+word-share estimates, portrayal/rule use, and recent motifs or phrases. It is
+merged only with the same confirmation that saves the reviewed scene state.
+Editing, deleting, or swiping accepted history marks the ledger stale, and the
+compiler and scene-close prompt ignore its old statistics. Normal scene deltas do not clear that
+warning. A separately confirmed reset discards only stale writing statistics,
+then requires the active context to be refreshed. The optional prose critic reviews only
+the latest assistant reply and returns an advisory report; it never rewrites,
+saves, or promotes its findings to canon automatically.
 
 ### Safe tools
 

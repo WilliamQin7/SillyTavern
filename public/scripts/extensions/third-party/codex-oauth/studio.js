@@ -7,6 +7,19 @@ import { escapeHtml } from '../../../utils.js';
 import { createWorldInfoEntry, loadWorldInfo, saveWorldInfo, updateWorldInfoList } from '../../../world-info.js';
 import { tr, translateStudioValidationErrors } from './i18n.js';
 import {
+    compileWritingContext,
+    markNarrativeLedgerStale,
+    mergeNarrativeLedger,
+    WRITING_CONTEXT_ENTRY_COMMENT,
+} from './studio-writing-core.js';
+import {
+    bindWritingControl,
+    normalizeWritingChatState,
+    normalizeWritingExtensionSettings,
+    writingControlMarkup,
+    writingControlTabMarkup,
+} from './studio-writing.js';
+import {
     activeStoryPlanContext,
     appendAudit,
     buildAssetPrompt,
@@ -34,9 +47,13 @@ const SETTINGS_KEY = 'codex_oauth_studio';
 const CHAT_STATE_KEY = 'amy_creator_studio';
 const PROVIDER_ID = 'codex-oauth';
 let chatSaveTimer = null;
+let writingController = null;
 
 function settings() {
-    extension_settings[SETTINGS_KEY] = normalizeStudioSettings(extension_settings[SETTINGS_KEY]);
+    const input = extension_settings[SETTINGS_KEY];
+    const normalized = normalizeStudioSettings(input);
+    normalized.writingProfileTemplates = input?.writingProfileTemplates;
+    extension_settings[SETTINGS_KEY] = normalizeWritingExtensionSettings(normalized);
     return extension_settings[SETTINGS_KEY];
 }
 
@@ -48,7 +65,7 @@ function chatState() {
     const input = chat_metadata[CHAT_STATE_KEY];
     const state = input && typeof input === 'object' ? input : {};
     const storyPlan = normalizeStoryPlan(state.storyPlan);
-    chat_metadata[CHAT_STATE_KEY] = {
+    chat_metadata[CHAT_STATE_KEY] = normalizeWritingChatState({
         ...state,
         pendingMemories: typeof state.pendingMemories === 'string' ? state.pendingMemories : '',
         pendingPlanOutline: typeof state.pendingPlanOutline === 'string' ? state.pendingPlanOutline : '',
@@ -57,7 +74,7 @@ function chatState() {
         storyState: normalizeStoryState(state.storyState),
         storyPlan,
         storyPlanProgress: normalizeStoryPlanProgress(state.storyPlanProgress, storyPlan),
-    };
+    });
     return chat_metadata[CHAT_STATE_KEY];
 }
 
@@ -308,7 +325,20 @@ async function prepareMemoryDraft(prompt, toastKey, { requireStoryState = false 
     const { text, source } = transcriptWindow(settings().memoryWindow);
     if (!source.chatId || !text) throw new Error(tr('studio.error.openChatMemory'));
     const state = chatState();
-    const raw = await codexText(prompt(text, state.storyState));
+    const planContext = activeStoryPlanContext(state.storyPlan, state.storyPlanProgress);
+    const currentFocus = planContext ? {
+        chapterId: planContext.chapter.id,
+        chapterTitle: planContext.chapter.title,
+        sceneId: planContext.scene?.id ?? '',
+        sceneTitle: planContext.scene?.title ?? '',
+    } : null;
+    const raw = await codexText(prompt(
+        text,
+        state.storyState,
+        state.narrativeLedger,
+        state.writingProfile,
+        currentFocus,
+    ));
     assertMemorySource(source);
     const draft = normalizeMemoryEnvelope(raw, source);
     if (!draft.memories.length && !draft.storyState) throw new Error(tr('studio.error.noMemories'));
@@ -317,6 +347,7 @@ async function prepareMemoryDraft(prompt, toastKey, { requireStoryState = false 
         source,
         memories: draft.memories,
         ...(draft.storyState ? { storyState: draft.storyState } : {}),
+        ...(requireStoryState ? { narrativeLedgerDelta: draft.narrativeLedgerDelta } : {}),
     }, null, 2);
     state.lastMemoryMessageCount = getContext().chat.filter(message => !message.is_system).length;
     assertMemorySource(source);
@@ -349,29 +380,33 @@ async function generateStoryPlanDraft() {
     toastr.success(tr('studio.toast.planPrepared', { count: plan.chapters.length }), tr('studio.error.actionTitle'));
 }
 
-async function syncActiveStoryPlan(plan, progress, source) {
-    const content = storyPlanToLoreContent(plan, progress);
+async function syncActiveContext(content, source, comment) {
     const bookName = await runSlash(`/getchatbook create=${content ? 'true' : 'false'}`);
     assertMemorySource(source);
     if (!bookName) return;
     const data = await loadWorldInfo(bookName) ?? { entries: {} };
     assertMemorySource(source);
     data.entries ??= {};
-    const existing = Object.entries(data.entries).find(([, entry]) => entry?.comment === STORY_PLAN_ENTRY_COMMENT);
+    const activeComments = new Set([STORY_PLAN_ENTRY_COMMENT, WRITING_CONTEXT_ENTRY_COMMENT]);
+    const existingEntries = Object.entries(data.entries).filter(([, entry]) => activeComments.has(entry?.comment));
+    const preferred = existingEntries.find(([, entry]) => entry?.comment === comment) ?? existingEntries[0];
     if (!content) {
-        if (existing) {
-            delete data.entries[existing[0]];
+        if (existingEntries.length) {
+            for (const [entryId] of existingEntries) delete data.entries[entryId];
             await saveWorldInfo(bookName, data, true);
         }
         assertMemorySource(source);
         return;
     }
-    const entry = existing?.[1] ?? createWorldInfoEntry(bookName, data);
+    const entry = preferred?.[1] ?? createWorldInfoEntry(bookName, data);
     if (!entry) throw new Error(tr('studio.error.memoryEntry'));
+    for (const [entryId, duplicate] of existingEntries) {
+        if (duplicate !== entry) delete data.entries[entryId];
+    }
     Object.assign(entry, {
         key: [],
         content,
-        comment: STORY_PLAN_ENTRY_COMMENT,
+        comment,
         constant: true,
         vectorized: false,
         order: 950,
@@ -381,6 +416,23 @@ async function syncActiveStoryPlan(plan, progress, source) {
     assertMemorySource(source);
     await saveWorldInfo(bookName, data, true);
     assertMemorySource(source);
+}
+
+async function syncActiveStoryPlan(plan, progress, source) {
+    const state = chatState();
+    if (state.writingControlActive && state.writingProfile) {
+        const compiled = compileWritingContext({
+            profile: state.writingProfile,
+            plan: progress.active ? plan : null,
+            progress,
+            ledger: state.narrativeLedger,
+            expectedSceneWords: state.expectedSceneWords,
+        });
+        await syncActiveContext(compiled.text, source, WRITING_CONTEXT_ENTRY_COMMENT);
+        state.compiledWritingContext = compiled;
+        return;
+    }
+    await syncActiveContext(storyPlanToLoreContent(plan, progress), source, STORY_PLAN_ENTRY_COMMENT);
 }
 
 async function saveReviewedStoryPlan() {
@@ -502,7 +554,22 @@ function assertMemorySource(source) {
     }
 }
 
-async function saveMemoryEntries(memories, { confirm = true, source = null, storyState = null, auditSource = 'memory_review' } = {}) {
+function hasLedgerDelta(delta) {
+    if (!delta || typeof delta !== 'object') return false;
+    return Object.values(delta.metrics ?? {}).some(value => Number(value) > 0)
+        || Object.keys(delta.factMentions ?? {}).length > 0
+        || Object.keys(delta.ruleApplications ?? {}).length > 0
+        || (delta.recentMotifs ?? []).length > 0
+        || (delta.recentPhrases ?? []).length > 0;
+}
+
+async function saveMemoryEntries(memories, {
+    confirm = true,
+    source = null,
+    storyState = null,
+    narrativeLedgerDelta = null,
+    auditSource = 'memory_review',
+} = {}) {
     const reviewedStoryState = normalizeStoryState(storyState);
     const storyContent = storyStateToLoreContent(reviewedStoryState);
     if (!memories.length && !storyContent) throw new Error(tr('studio.error.noValidMemories'));
@@ -564,6 +631,9 @@ async function saveMemoryEntries(memories, { confirm = true, source = null, stor
     const chat = chatState();
     chat.pendingMemories = '';
     if (storyContent) chat.storyState = reviewedStoryState;
+    if (storyContent && hasLedgerDelta(narrativeLedgerDelta)) {
+        chat.narrativeLedger = mergeNarrativeLedger(chat.narrativeLedger, narrativeLedgerDelta);
+    }
     appendAudit(state, {
         tool: auditSource,
         status: fresh.length || storyContent ? 'approved' : 'skipped',
@@ -587,7 +657,11 @@ async function saveMemoryEntries(memories, { confirm = true, source = null, stor
 async function savePendingMemories() {
     const draft = normalizeMemoryEnvelope($('#amy-studio-memory-draft').val());
     if (!draft.source.chatId) throw new Error(tr('studio.error.memoryMissingSource'));
-    await saveMemoryEntries(draft.memories, { source: draft.source, storyState: draft.storyState });
+    await saveMemoryEntries(draft.memories, {
+        source: draft.source,
+        storyState: draft.storyState,
+        narrativeLedgerDelta: draft.narrativeLedgerDelta,
+    });
 }
 
 function registerSafeTools() {
@@ -703,6 +777,7 @@ function renderSettings() {
     $('#amy-studio-safe-tools').prop('checked', state.enableSafeTools);
     renderStoryPlanSelectors();
     renderAudit();
+    writingController?.render();
 }
 
 function setBusy(button, busy) {
@@ -738,6 +813,7 @@ function createPanel() {
                     <button class="menu_button amy-studio-tab" data-tab="character" data-i18n="amyCreatorStudio.studio.tab.character">Character</button>
                     <button class="menu_button amy-studio-tab" data-tab="assets" data-i18n="amyCreatorStudio.studio.tab.assets">Assets</button>
                     <button class="menu_button amy-studio-tab" data-tab="plan" data-i18n="amyCreatorStudio.studio.tab.plan">Story plan</button>
+                    ${writingControlTabMarkup()}
                     <button class="menu_button amy-studio-tab" data-tab="memory" data-i18n="amyCreatorStudio.studio.tab.memory">Memory</button>
                     <button class="menu_button amy-studio-tab" data-tab="tools" data-i18n="amyCreatorStudio.studio.tab.tools">Safe tools</button>
                 </div>
@@ -765,6 +841,7 @@ function createPanel() {
                     <small id="amy-studio-plan-status"></small>
                     <small data-i18n="amyCreatorStudio.studio.plan.note">Only the selected chapter and scene are added to the writing context. Future chapters stay hidden, and the plan is never treated as established canon.</small>
                 </section>
+                ${writingControlMarkup()}
                 <section data-amy-tab="memory" class="displayNone">
                     <label><span data-i18n="amyCreatorStudio.studio.memory.window">Recent messages to inspect</span><input id="amy-studio-memory-window" class="text_pole" type="number" min="4" max="100"></label>
                     <label class="checkbox_label"><input id="amy-studio-auto-memory" type="checkbox"><span data-i18n="amyCreatorStudio.studio.memory.auto">Automatically prepare a review draft</span></label>
@@ -871,7 +948,37 @@ function createPanel() {
     bindAction('#amy-studio-plan-save', saveReviewedStoryPlan);
     bindAction('#amy-studio-plan-activate', activateStoryPlan);
     bindAction('#amy-studio-plan-deactivate', deactivateStoryPlan);
+    writingController = bindWritingControl({
+        getChatState: chatState,
+        getSettings: settings,
+        getPlan: () => chatState().storyPlan,
+        getSelectedProgress: selectedStoryPlanProgress,
+        getChatId: () => String(getCurrentChatId() ?? ''),
+        isCheckpoint: () => Boolean(chat_metadata.main_chat),
+        getLatestAssistantText: () => [...getContext().chat].reverse()
+            .find(message => !message.is_system && !message.is_user && typeof message.mes === 'string' && message.mes.trim())
+            ?.mes ?? '',
+        runCodexText: codexText,
+        recordAudit: (tool, summary) => {
+            appendAudit(settings(), { tool, status: 'approved', summary });
+            persist();
+            renderAudit();
+        },
+        persistChat,
+        persistSettings: persist,
+        syncWritingContext: (content, source) => syncActiveContext(content, source, WRITING_CONTEXT_ENTRY_COMMENT),
+        assertSource: assertMemorySource,
+        renderParent: renderSettings,
+    });
     renderSettings();
+}
+
+function markCurrentLedgerStale(reason) {
+    const state = chatState();
+    if (!state.narrativeLedger.acceptedMetrics.words && !state.narrativeLedger.sceneIndex) return;
+    state.narrativeLedger = markNarrativeLedgerStale(state.narrativeLedger, reason);
+    void persistChat();
+    writingController?.render();
 }
 
 export function initCreatorStudio() {
@@ -885,4 +992,7 @@ export function initCreatorStudio() {
     registerSafeTools();
     eventSource.on(event_types.MESSAGE_RECEIVED, maybePrepareAutomaticMemory);
     eventSource.on(event_types.CHAT_CHANGED, renderSettings);
+    eventSource.on(event_types.MESSAGE_EDITED, () => markCurrentLedgerStale(tr('studio.writing.ledgerStaleEdited')));
+    eventSource.on(event_types.MESSAGE_DELETED, () => markCurrentLedgerStale(tr('studio.writing.ledgerStaleDeleted')));
+    eventSource.on(event_types.MESSAGE_SWIPED, () => markCurrentLedgerStale(tr('studio.writing.ledgerStaleSwiped')));
 }

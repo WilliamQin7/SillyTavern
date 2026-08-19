@@ -1,6 +1,6 @@
 # Amy Creator Studio 写作控制改进设计
 
-状态：提案（Proposed）
+状态：已实现 Phase 1、Phase 2 与 Phase 3 只读审校；Phase 4 保留为后续增强
 最后更新：2026-08-19
 适用分支：`codex/codex-subscription`
 
@@ -9,8 +9,15 @@ Plan、Story State、原子记忆和 checkpoint 工作流之上的写作控制�
 目标是让 Agent 稳定理解作者偏好，同时减少人物特征、意象、句式和剧情提示
 被不必要地反复表现。
 
-本文是实现设计，不代表功能已经完成。现有用户操作规范仍以
-[`CREATOR_STUDIO_WORKFLOW.md`](./CREATOR_STUDIO_WORKFLOW.md) 为准。
+本文同时保留设计依据与实现不变量。当前用户操作规范以
+[`CREATOR_STUDIO_WORKFLOW.md`](./CREATOR_STUDIO_WORKFLOW.md) 为准；实现位于
+`studio-writing-core.js`、`studio-writing.js` 及其测试。Phase 3 的自动
+改写仍未启用，审校报告只读且可复制；Phase 4 的高级 World Info 映射仍是
+后续增强。
+
+需要让 Agent 直接执行完整工作流时，使用
+[`WRITING_CONTROL_AGENT_GUIDE.md`](./WRITING_CONTROL_AGENT_GUIDE.md) 作为
+单一入口。
 
 ## 1. 背景与问题
 
@@ -32,7 +39,7 @@ Plan、Story State、原子记忆和 checkpoint 工作流之上的写作控制�
 `styleGuide` 当前是自由文本数组，无法可靠表达：
 
 - 硬约束与软偏好的区别；
-- 全书、章节、场景和局部 Beat 的作用域；
+- 全书偏好与章节、场景和一次性局部要求的放置位置；
 - 适用条件、排除条件和冲突优先级；
 - 对话、动作、心理和环境描写的目标范围；
 - 正面范例、反例和作者认可的声音；
@@ -200,7 +207,6 @@ Chat metadata ──────────────────────
       "instruction": "优先通过动作、停顿和环境互动表现情绪，避免紧接着解释同一情绪。",
       "kind": "soft",
       "priority": 80,
-      "scope": "scene",
       "includeTags": ["dialogue", "conflict", "aftermath"],
       "excludeTags": ["outline-only"],
       "maxApplicationsPerScene": 3
@@ -210,7 +216,6 @@ Chat metadata ──────────────────────
     {
       "id": "dialogue-share",
       "metric": "dialogue_word_share",
-      "scope": "chapter",
       "min": 0.3,
       "max": 0.45
     }
@@ -244,13 +249,12 @@ Chat metadata ──────────────────────
 - `hardRules`：最多 20 条，每条最多 500 字符。
 - `rules`：最多 100 条；每轮最多选择 6 条软规则。
 - `kind`：`hard | soft`。`hard` 规则不可使用概率选择。
-- `scope`：`global | chapter | scene | beat`。
 - `priority`：0–100，仅用于本地排序。
 - `includeTags` / `excludeTags`：确定性匹配当前场景标签。
 - `targets`：范围必须满足 `0 <= min <= max <= 1`。
 - `examples`：最多 30 段，每段正文最多 2,000 字符；每轮最多选择 2 段，
   合计受上下文预算限制。
-- `matchTerms`：仅用于本地检测直接或近似复述，不自动作为提示词反复注入。
+- `matchTerms`：预留给人工审核辅助；当前版本不自动检测，也不参与编译。
 
 ### 5.2 Story Plan v1 的兼容扩展
 
@@ -315,8 +319,8 @@ Ledger 不是正史，不能覆盖 Story State。它只记录已接受正文的�
 - 未经确认的模型输出不得进入 Ledger；
 - 用户可以在保存前编辑或删除错误检测；
 - checkpoint 继承 Ledger；分支在世界书隔离后仍通过各自聊天元数据独立推进；
-- 删除或重写历史正文后，系统应把 Ledger 标记为 `stale`，提示重新分析，而
-  不是静默相信旧统计。
+- 删除或重写历史正文后，系统把 Ledger 标记为 `stale`；旧数据继续可见，但
+  编译器和 Scene Close 不再使用其中的比例、冷却或重复统计。
 
 ### 5.4 聊天状态
 
@@ -348,11 +352,14 @@ Ledger 不是正史，不能覆盖 Story State。它只记录已接受正文的�
 
 - 已审核 Writing Profile；
 - Story Plan 与当前 progress；
-- 当前 Story State；
 - Narrative Ledger；
 - 当前 Scene 的 tags、显式 rule IDs、target overrides 和 portrayal triggers；
-- 当前用户指令，但用户文本不得被永久写回 Profile；
 - 上下文预算。
+
+章节和场景的局部生效由 Story Plan 中对应层级的 tags、`styleRuleIds`、
+`disabledStyleRuleIds`、`targetOverrides` 与 `portrayalTriggers` 表达，不在规则中
+保存一个含义模糊的 `scope` 字段。一次性用户要求只存在于当前对话轮次，不写回
+Profile。
 
 ### 6.2 确定性选择顺序
 
@@ -380,7 +387,8 @@ Ledger 不是正史，不能覆盖 Story State。它只记录已接受正文的�
 1. 当前场景是否显式包含对应 `portrayalTriggers` 或匹配 `includeTags`；
 2. 是否达到 `maxMentionsPerScene`；
 3. 是否仍处于 `cooldownScenes`；
-4. 当前 Story State 是否显示该事实发生变化或对动作有物理影响；
+4. Story State 中的变化或物理影响必须先转换成可审核的场景 tag/trigger；
+   编译器不直接推断 Story State；
 5. 若无触发条件，只输出通用规则：稳定外貌和背景仅用于一致性，本场不主动
    重述；不要在 suppress 指令中反复列出具体外貌词。
 
@@ -499,7 +507,7 @@ NovelAI 的 Phrase Bias 和“生成后撤销 bias”适合控制特定 token，
 
 1. Profile：选择模板、从模板复制、导入、导出。
 2. 基础声音：语言、POV、时态、叙述距离。
-3. 偏好规则：可排序的规则列表，每条显示作用域、优先级和触发标签。
+3. 偏好规则：简单模式每行一条；高级 JSON 可配置优先级和触发标签。
 4. 比例目标：使用范围输入，不使用单点百分比。
 5. 表现控制：默认提供“稳定外貌仅在相关时描写”的开关和冷却场景数。
 6. 风格样例：粘贴短样例并添加标签、备注。
@@ -525,7 +533,6 @@ NovelAI 的 Phrase Bias 和“生成后撤销 bias”适合控制特定 token，
 - 每条规则的来源：硬规则、Scene 显式选择、tag 命中或 legacy styleGuide；
 - 被排除规则及原因：冷却、次数上限、排除标签、预算或显式禁用；
 - 是否包含未来章节：必须始终显示 `No`；
-- 活动条目写入的目标世界书名称；
 - source hash，用于判断保存后是否因 Profile、Plan 或 Ledger 变化而过期。
 
 任何编译警告都不得阻止用户查看和复制预览；只有结构非法、来源聊天变化或
@@ -549,7 +556,7 @@ Critic 默认关闭，开启后只生成审核报告，不自动改正文：
 }
 ```
 
-用户可以选择忽略、复制建议或对选中段落进行局部重写。Critic 失败不得阻止
+用户可以选择忽略或复制建议后自行修改。Critic 失败不得阻止
 保留初稿，也不得把报告自动写入正史或长期记忆。
 
 ## 9. 持久化与安全边界
@@ -582,7 +589,7 @@ Critic 默认关闭，开启后只生成审核报告，不自动改正文：
 第一次打开写作控制页时可以准备迁移草稿：
 
 - 每个 `styleGuide` 字符串转换为一条 `legacy-style-N` soft rule；
-- `scope = global`，`priority = 50`；
+- `priority = 50`，且没有标签限制；
 - 不自动保存、不删除原字段；
 - 用户确认 Profile 后，编译器优先使用 Profile；
 - 为兼容导出，原 Story Plan `styleGuide` 继续保留，直到未来明确版本迁移。
@@ -600,14 +607,13 @@ Critic 默认关闭，开启后只生成审核报告，不自动改正文：
 - 只增加可选字段时保持 v1；
 - 改变字段语义或删除字段才创建 v2；
 - 所有 normalize 函数必须返回新对象，不修改调用方输入；
-- 未知 namespaced extension 字段继续保留；
 - 规范化必须有数量、长度和类型上限，防止异常 JSON 占满上下文或 UI。
 
 ## 11. 测试与评估
 
-### 11.1 单元测试
+### 11.1 自动化测试验收清单
 
-至少覆盖：
+当前纯逻辑测试应覆盖下列项目；浏览器交互和创作行为效果仍按后续两节验证：
 
 - Writing Profile JSON 与对象输入规范化；
 - 重复 ID、非法范围、过长字段和未知枚举；
@@ -643,7 +649,7 @@ Critic 默认关闭，开启后只生成审核报告，不自动改正文：
    无关的场景，比较启用控制前后的无必要提及率。
 2. **必要触发**：首次见面、伪装识别、受伤变化和物理影响场景必须允许表现。
 3. **同义复述**：检测直接词和语义改写，避免只通过关键词测试。
-4. **风格作用域**：对话规则不能泄漏到纯大纲整理；动作场景规则不能永久
+4. **局部规则选择**：对话规则不能泄漏到纯大纲整理；动作场景规则不能永久
    影响后续安静场景。
 5. **比例目标**：用多个场景观察章节范围趋势，不要求单段精确命中。
 6. **未来剧情隔离**：当前场景输出不得提及后续章节专有事实。
@@ -662,6 +668,13 @@ Critic 默认关闭，开启后只生成审核报告，不自动改正文：
 速度模式、上下文配置和运行日期。
 
 ## 12. 分阶段实施
+
+当前实现状态：
+
+- Phase 1：已完成；
+- Phase 2：已完成，Ledger delta 通过现有 Scene Close 审核信封保存；
+- Phase 3：已完成只读 Critic 报告与复制，未实现自动或选区改写；
+- Phase 4：未实现，继续使用确定性编译出的单一常驻条目。
 
 ### Phase 1：Profile、编译器与预览
 
@@ -688,9 +701,7 @@ Critic 默认关闭，开启后只生成审核报告，不自动改正文：
 ### Phase 3：可选 Critic 与局部修订
 
 - 新增只读 Critic 报告；
-- 支持选中问题段落局部修订；
 - 不自动接受修改，不自动更新正史；
-- 记录安全、成本和延迟指标。
 
 交付价值：覆盖同义复述、隐性风格偏移和难以纯规则检测的问题。
 
@@ -726,7 +737,7 @@ Critic 默认关闭，开启后只生成审核报告，不自动改正文：
 
 ### 为什么不直接扩大 `styleGuide`
 
-自由文本适合作为迁移入口，不适合承担作用域、优先级、触发、冷却、比例和
+自由文本适合作为迁移入口，不适合承担优先级、触发、冷却、比例和
 可观测性。保留它用于兼容，但长期权威应是 Writing Profile。
 
 ### 为什么 Profile 模板与聊天快照分开

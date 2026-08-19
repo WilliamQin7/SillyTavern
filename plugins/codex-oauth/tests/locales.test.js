@@ -23,6 +23,8 @@ test('bundled Amy Studio locales have the same complete key set', async () => {
     }
     const manifest = JSON.parse(await fs.readFile(path.join(root, 'public/scripts/extensions/third-party/codex-oauth/manifest.json'), 'utf8'));
     assert.deepEqual(manifest.i18n, { 'zh-cn': 'locales/zh-cn.json', 'zh-tw': 'locales/zh-tw.json' });
+    const pluginPackage = JSON.parse(await fs.readFile(path.join(root, 'plugins/codex-oauth/package.json'), 'utf8'));
+    assert.equal(pluginPackage.version, manifest.version);
 });
 
 test('named placeholders are deterministic', () => {
@@ -33,6 +35,7 @@ test('every static Amy Studio data-i18n key has a bundled fallback', async () =>
     const files = [
         'public/scripts/extensions/third-party/codex-oauth/settings.js',
         'public/scripts/extensions/third-party/codex-oauth/studio.js',
+        'public/scripts/extensions/third-party/codex-oauth/studio-writing.js',
     ];
     const source = (await Promise.all(files.map(file => fs.readFile(path.join(root, file), 'utf8')))).join('\n');
     const keys = [...source.matchAll(/data-i18n="(?:\[[^\]]+])?amyCreatorStudio\.([^"]+)"/g)].map(match => match[1]);

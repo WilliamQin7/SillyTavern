@@ -6,16 +6,23 @@
 Agent 应优先遵守本文的“必须 / 不得”约束。界面按钮名称以中文版为主，
 括号内给出英文名。
 
+需要由 Agent 从需求采集一直执行到场景收束时，应先完整阅读
+[`WRITING_CONTROL_AGENT_GUIDE.md`](./WRITING_CONTROL_AGENT_GUIDE.md)。该文档
+提供单一入口、状态机、完整字段字典、输出模板、恢复流程和机器验收标准。
+
 ## 一分钟流程
 
 1. 在“角色”页生成或迁移 Character Card，校验后导入。
 2. **可选**：已有章纲时，在“规划”页整理并保存 Story Plan，再只启用当前
    章或场景；没有 Story Plan 时，以下流程完全不变。
-3. 正常写一个场景，不要在每轮对话后整理全部状态。
-4. 场景结束时点击“生成场景收束草稿”（Prepare scene close）。
-5. 审核记忆与 `storyState`，尤其检查正史、作者计划和人物关系。
-6. 点击“保存已审核草稿”（Save reviewed draft）。
-7. 到达重要分歧点时创建 checkpoint；若要在分支保存不同状态，先复制并
+3. **可选**：在“写作控制”页审核并保存 Writing Profile，预览当前场景实际
+   会看到的上下文，再确认启用。
+4. 正常写一个场景，不要在每轮对话后整理全部状态。
+5. 场景结束时点击“生成场景收束草稿”（Prepare scene close）。
+6. 审核记忆、`storyState` 与 `narrativeLedgerDelta`，尤其检查正史、作者
+   计划、人物关系和重复痕迹。
+7. 点击“保存已审核草稿”（Save reviewed draft）。
+8. 到达重要分歧点时创建 checkpoint；若要在分支保存不同状态，先复制并
    重新绑定聊天世界书。
 
 ## 核心约束
@@ -47,6 +54,9 @@ Agent 应优先遵守本文的“必须 / 不得”约束。界面按钮名称�
 | `authorPlans` | Story State 的聊天元数据副本 | 否 | 作者协调；防止计划提前泄漏到角色扮演提示 |
 | 完整 Story Plan | 聊天元数据 | 否 | 已审核的作品定位、章节与场景规划 |
 | 活动 Story Plan 焦点 | 一个可移除的聊天世界书常驻条目 | 是 | 只提供当前章/场景的目标与约束；明确标记为非正史 |
+| Writing Profile | 用户模板 + 当前聊天已审核快照 | 完整数据不进入 | POV、时态、硬规则、软偏好、比例目标、表现策略与样例 |
+| Narrative Ledger | 聊天元数据 | 仅编译后的重复防护进入 | 已接受场景的比例统计、表现次数和近期意象；不是正史 |
+| 活动写作上下文 | 一个可替换的聊天世界书常驻条目 | 是 | 当前场景所需的最小契约、意图、写法、表现许可和重复防护 |
 | checkpoint | SillyTavern 原生聊天快照 | 继承创建时的聊天元数据 | 剧情分歧、回退与 Timelines 展示 |
 
 ## 流程 A：新建 Character Card V3
@@ -218,7 +228,85 @@ Story Plan 是增强层，不是使用 Studio 的前置条件。没有章纲、�
 整理模型不得擅自补写章纲中没有的反转、结局、事实或场景。若输入含糊，宁可
 保持概括，也不要把模型猜测升级成作者决定。
 
-## 流程 D：长篇小说的场景循环
+## 流程 D：写作偏好与注意力控制（可选）
+
+Writing Profile 解决“怎样写”；Story Plan 解决“当前写什么”。两者可以独立
+使用。没有已保存并启用的 Profile 时，原有 Story Plan、角色卡和世界书行为
+保持不变。
+
+### 首次设置
+
+1. 打开 **Extensions → Amy Creator Studio → 写作控制**。
+2. 选择“内置克制叙事”，或从 Story Plan 的旧 `styleGuide` 准备迁移草稿。
+   迁移只生成草稿，不会自动保存或删除旧字段。
+3. 在简单界面中填写语言、视角、时态、叙事距离、硬规则、文风偏好、对话
+   范围、外貌冷却和短样例。需要 tags、优先级或章节/场景局部选择时使用“高级
+   Profile JSON”。
+4. 点击“保存已审核配置”并确认。聊天得到独立快照；以后修改可复用模板不会
+   静默改变这部作品。
+5. 在“规划”页选好当前章和场景，回到“写作控制”点击“编译预览”。
+6. 在上下文检查器中确认：
+   - 未来章节始终为“否”；
+   - 选中与排除规则的原因合理；
+   - token 预算没有异常警告；
+   - source hash 与当前 Profile、焦点和 Ledger 对应。
+7. 点击“启用 / 刷新”并确认。系统会把旧的
+   `Amy Active Story Plan v1` 原地迁移为唯一的
+   `Amy Active Writing Context v1`，不会保留两个常驻条目。
+
+### 当前场景标签
+
+高级 Story Plan JSON 可以在 Chapter 或 Scene 中使用以下可选字段：
+
+```json
+{
+  "tags": ["dialogue", "conflict", "first-observation"],
+  "styleRuleIds": ["emotion-through-action"],
+  "disabledStyleRuleIds": ["lyrical-weather"],
+  "targetOverrides": {
+    "dialogue_word_share": [0.4, 0.55]
+  },
+  "portrayalTriggers": ["stable-appearance"]
+}
+```
+
+- `tags` 选择与场景相关的软规则；
+- `styleRuleIds` 显式选择规则，`disabledStyleRuleIds` 显式排除规则；
+- `targetOverrides` 只调整当前章或场景的软比例范围；
+- `portrayalTriggers` 允许本场表现对应稳定事实；
+- 所有 ID 都必须引用已审核 Profile；未知 ID 只产生预览警告。
+
+### 场景结束与 Narrative Ledger
+
+“生成场景收束草稿”会额外生成可编辑的
+`narrativeLedgerDelta`。它只统计本场已接受正文，不是正史。保存前应删除
+错误的表现次数、意象或比例估算；只有与 Story State 一起确认保存后才会合并
+到 `amy_narrative_ledger_v1`。
+
+若历史消息被编辑、删除或切换 swipe，Ledger 会被标记为过期；编译器和 Scene
+Close 会忽略其中的比例、冷却和重复统计。普通 Scene Close 增量不会静默清除
+过期状态。当前版本不能自动重建全部
+历史统计；确认“重置过期账本”后只清除写作统计和近期重复痕迹，不改变正文、
+Story State、记忆、Profile 或 Plan。随后应重新编译活动上下文，并从后续已
+审核场景重新累计。
+
+### 可选正文审校
+
+“审核最近回复”只把最近一条助手正文与当前已审核写作控制交给 Codex，返回
+不必要事实表现、重复意象、规则违反和比例估算。报告只显示在界面中，不自动
+保存、不修改正文、不写入正史或长期记忆。用户可以复制报告后自行决定是否
+局部修改。
+
+### Agent 不变量
+
+- 稳定外貌和背景默认只用于一致性，不代表本场必须主动描写。
+- 硬规则始终保留；软规则每轮最多 6 条，样例最多 2 段。
+- 比例是范围与场景预算，不得用无效对白或描写凑数。
+- 完整 Profile、完整 Story Plan、`premise` 和未来章节不得进入活动条目。
+- Profile、Plan、Story State 与 Ledger 不得互相覆盖职责。
+- 停用只删除活动条目；已审核数据继续保留。
+
+## 流程 E：长篇小说的场景循环
 
 ### 1. 写场景
 
@@ -345,7 +433,7 @@ Story Plan 是增强层，不是使用 Studio 的前置条件。没有章纲、�
 
 如果用户取消确认，不得把取消当成失败重试，也不得绕过确认直接调用写入接口。
 
-## 流程 E：checkpoint 与剧情分支
+## 流程 F：checkpoint 与剧情分支
 
 ### 只创建导航节点
 
