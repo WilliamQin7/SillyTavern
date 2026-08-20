@@ -487,11 +487,34 @@ function section(title, lines) {
     return filtered.length ? '[' + title + ']\n' + filtered.map(line => '- ' + line).join('\n') : '';
 }
 
+function boundedSection(title, lines, maxChars) {
+    const filtered = lines.filter(Boolean);
+    const limit = Math.max(0, Math.floor(maxChars));
+    const prefix = '[' + title + ']\n';
+    if (!filtered.length || limit <= prefix.length + 4) return '';
+    let output = prefix;
+    for (const line of filtered) {
+        const separator = output === prefix ? '' : '\n';
+        const available = limit - output.length - separator.length - 2;
+        if (available <= 1) break;
+        const value = String(line);
+        const clipped = value.length > available
+            ? value.slice(0, Math.max(1, available - 1)).trimEnd() + '…'
+            : value;
+        output += separator + '- ' + clipped;
+        if (clipped.length < value.length) break;
+    }
+    return output === prefix ? '' : output;
+}
+
 export function compileWritingContext({
     profile: profileValue,
     plan = null,
     progress = {},
     ledger: ledgerValue = null,
+    sceneBrief: sceneBriefValue = null,
+    reviewedContinuity = '',
+    projectReferences: projectReferenceValue = [],
     expectedSceneWords = 1100,
     budgetChars = 3000,
 } = {}) {
@@ -588,25 +611,73 @@ export function compileWritingContext({
         ...profile.contract.hardRules,
         ...hardRules.map(rule => rule.instruction),
     ];
+    const sceneBrief = sceneBriefValue && typeof sceneBriefValue === 'object' && !Array.isArray(sceneBriefValue)
+        ? sceneBriefValue
+        : {};
+    const hasEditedScene = Boolean(text(sceneBrief.updatedAt, 80))
+        && text(sceneBrief.chapterId, 120) === (chapter?.id ?? '')
+        && text(sceneBrief.sceneId, 120) === (scene?.id ?? '');
+    const effectiveSceneBrief = hasEditedScene ? sceneBrief : {};
     const intentLines = [];
     if (chapter) {
         intentLines.push('Chapter: ' + chapter.title + '.');
-        if (chapter.summary) intentLines.push('Chapter intent: ' + chapter.summary.slice(0, 1000));
-        for (const item of (chapter.goals ?? []).slice(0, 6)) intentLines.push('Chapter goal: ' + item.slice(0, 240));
-        for (const item of (chapter.constraints ?? []).slice(0, 6)) intentLines.push('Chapter constraint: ' + item.slice(0, 240));
+        if (!hasEditedScene) {
+            if (chapter.summary) intentLines.push('Chapter intent: ' + chapter.summary.slice(0, 1000));
+            for (const item of (chapter.goals ?? []).slice(0, 6)) intentLines.push('Chapter goal: ' + item.slice(0, 240));
+            for (const item of (chapter.constraints ?? []).slice(0, 6)) intentLines.push('Chapter constraint: ' + item.slice(0, 240));
+        }
     }
     if (scene) {
         intentLines.push('Scene: ' + scene.title + '.');
-        if (scene.summary) intentLines.push('Scene intent: ' + scene.summary.slice(0, 800));
-        for (const item of (scene.goals ?? []).slice(0, 6)) intentLines.push('Scene goal: ' + item.slice(0, 240));
-        for (const item of (scene.constraints ?? []).slice(0, 6)) intentLines.push('Scene constraint: ' + item.slice(0, 240));
+        if (!hasEditedScene) {
+            if (scene.summary) intentLines.push('Scene intent: ' + scene.summary.slice(0, 800));
+            for (const item of (scene.goals ?? []).slice(0, 6)) intentLines.push('Scene goal: ' + item.slice(0, 240));
+            for (const item of (scene.constraints ?? []).slice(0, 6)) intentLines.push('Scene constraint: ' + item.slice(0, 240));
+        }
     }
+    if (hasEditedScene) intentLines.push('The reviewed editable scene below replaces the chapter and scene planning details for this drafting pass.');
     if (chapter || scene) intentLines.push('These are author intentions, not events that already occurred.');
     const readinessLines = chapter || scene
         ? [
             'The current chapter and scene focus below has been reviewed and enabled for drafting.',
             'When the user asks to write using the current focus, proceed from this context without requesting the same focus fields again.',
             'An empty reviewed Story State means that no earlier story events have become canon yet; it does not mean that the writing focus is missing.',
+        ]
+        : [];
+    const hasSceneBrief = Boolean(
+        text(effectiveSceneBrief.summary, 4000)
+        || texts(effectiveSceneBrief.cast, 120, 30).length
+        || text(effectiveSceneBrief.time, 300)
+        || text(effectiveSceneBrief.location, 300)
+        || texts(effectiveSceneBrief.mustInclude, 500, 30).length
+        || texts(effectiveSceneBrief.avoid, 500, 30).length
+        || text(effectiveSceneBrief.ending, 1000),
+    );
+    const briefLines = [
+        text(effectiveSceneBrief.summary, 4000) && 'Scene direction: ' + text(effectiveSceneBrief.summary, 4000),
+        texts(effectiveSceneBrief.cast, 120, 30).length && 'Active cast: ' + texts(effectiveSceneBrief.cast, 120, 30).join(', ') + '.',
+        text(effectiveSceneBrief.time, 300) && 'Scene time: ' + text(effectiveSceneBrief.time, 300),
+        text(effectiveSceneBrief.location, 300) && 'Scene location: ' + text(effectiveSceneBrief.location, 300),
+        ...texts(effectiveSceneBrief.mustInclude, 500, 30).map(item => 'Must include: ' + item),
+        ...texts(effectiveSceneBrief.avoid, 500, 30).map(item => 'Do not do: ' + item),
+        text(effectiveSceneBrief.ending, 1000) && 'End beat: ' + text(effectiveSceneBrief.ending, 1000),
+        hasEditedScene && (hasSceneBrief
+            ? 'This is the reviewed effective scene instruction and is not established canon.'
+            : 'The reviewed effective scene intentionally contains no additional scene instructions; it is not established canon.'),
+    ];
+    const continuityLines = text(reviewedContinuity, 4000)
+        ? [
+            'This is the latest reviewed canon and overrides older or initial relationship descriptions.',
+            text(reviewedContinuity, 4000),
+        ]
+        : [];
+    const projectReferences = (Array.isArray(projectReferenceValue) ? projectReferenceValue : [])
+        .filter(item => item && typeof item === 'object' && text(item.content, 2000))
+        .slice(0, 12);
+    const projectReferenceLines = projectReferences.length
+        ? [
+            'Use these stable or opening facts only where current reviewed continuity does not supersede them.',
+            ...projectReferences.map(item => (text(item.label, 200) ? text(item.label, 200) + ': ' : '') + text(item.content, 2000)),
         ]
         : [];
 
@@ -674,11 +745,29 @@ export function compileWritingContext({
         .filter(example => !example.tags.length || intersects(example.tags, allTags))
         .sort((left, right) => left.id.localeCompare(right.id))
         .slice(0, 2);
+    const contractSection = section('WRITING CONTRACT', contractLines);
+    const readinessSection = section('ACTIVE WRITING READINESS', readinessLines);
+    const portrayalSection = section('REFERENCE REALIZATION POLICY', portrayalLines);
+    const fixedRequiredSections = [contractSection, readinessSection, portrayalSection].filter(Boolean);
+    const flexibleSections = [
+        { title: 'CURRENT REVIEWED CONTINUITY — CANON', lines: continuityLines, weight: 0.32 },
+        { title: 'CURRENT AUTHOR INTENT — NOT CANON', lines: intentLines, weight: 0.25 },
+        { title: 'CURRENT EDITED SCENE — NOT CANON', lines: briefLines, weight: 0.28 },
+        { title: 'STABLE PROJECT REFERENCES — FALLBACK ONLY', lines: projectReferenceLines, weight: 0.15 },
+    ].filter(item => item.lines.some(Boolean));
+    const optionalReserve = Math.min(1500, Math.floor(budgetChars * 0.25));
+    const flexibleBudget = Math.max(0, budgetChars - fixedRequiredSections.join('\n\n').length - optionalReserve);
+    const activeWeight = flexibleSections.reduce((sum, item) => sum + item.weight, 0) || 1;
+    const boundedFlexibleSections = flexibleSections.map(item => boundedSection(
+        item.title,
+        item.lines,
+        flexibleBudget * item.weight / activeWeight,
+    )).filter(Boolean);
     const requiredSections = [
-        section('WRITING CONTRACT', contractLines),
-        section('ACTIVE WRITING READINESS', readinessLines),
-        section('CURRENT AUTHOR INTENT — NOT CANON', intentLines),
-        section('REFERENCE REALIZATION POLICY', portrayalLines),
+        contractSection,
+        readinessSection,
+        ...boundedFlexibleSections,
+        portrayalSection,
     ].filter(Boolean);
     const requiredLength = requiredSections.join('\n\n').length;
     const includedRuleIds = [];
@@ -700,11 +789,11 @@ export function compileWritingContext({
         else warnings.push('A prose-ratio target was omitted from the compiled context because of the context budget.');
     }
     const baseSections = [
-        section('WRITING CONTRACT', contractLines),
-        section('ACTIVE WRITING READINESS', readinessLines),
-        section('CURRENT AUTHOR INTENT — NOT CANON', intentLines),
+        contractSection,
+        readinessSection,
+        ...boundedFlexibleSections,
         section('ACTIVE PROSE DIRECTIONS', includedDirections),
-        section('REFERENCE REALIZATION POLICY', portrayalLines),
+        portrayalSection,
     ].filter(Boolean);
     let output = baseSections.join('\n\n');
     const repetitionBlock = section('RECENT REPETITION GUARD', repetitionLines);
@@ -730,6 +819,9 @@ export function compileWritingContext({
         chapter,
         scene,
         ledger,
+        sceneBrief,
+        reviewedContinuity: text(reviewedContinuity, 4000),
+        projectReferences,
         expectedSceneWords,
         budgetChars,
     });
@@ -806,10 +898,13 @@ export function buildCurrentSceneWritingRequest(value = {}) {
     const language = text(value.language, 120) || 'the language required by the active Writing Profile';
     const expectedSceneWords = Math.min(5000, Math.max(200, Math.round(number(value.expectedSceneWords)) || 1100));
     const focus = [chapterTitle, sceneTitle].filter(Boolean).join(' / ') || 'the active chapter and scene';
+    const targetUnit = /(?:^zh(?:-|$)|chinese|中文)/i.test(language)
+        ? `approximately ${expectedSceneWords} Chinese characters, with a preferred tolerance of ±15%`
+        : `approximately ${expectedSceneWords} words, with a preferred tolerance of ±15%`;
     return [
         'Write the currently active scene as finished novel prose.',
         `Active focus: ${focus}.`,
-        `Write in ${language}, targeting approximately ${expectedSceneWords} words or Chinese characters as appropriate for that language.`,
+        `Write in ${language}, targeting ${targetUnit}.`,
         'Use the active project context, Writing Profile, reviewed story state, and recent prose. Treat the current chapter and scene plan as author intent, not as events that already happened.',
         'Do not ask me to repeat the focus, POV, location, cast, or target length when they are already present in the active context.',
         'Output only the prose. Do not include planning notes, explanations, JSON, headings, or a recap.',

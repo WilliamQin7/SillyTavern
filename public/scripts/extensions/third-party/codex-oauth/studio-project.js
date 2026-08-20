@@ -1,4 +1,4 @@
-import { Popup } from '../../../popup.js';
+import { POPUP_RESULT, POPUP_TYPE, Popup } from '../../../popup.js';
 import { escapeHtml } from '../../../utils.js';
 import { tr } from './i18n.js';
 import {
@@ -8,6 +8,8 @@ import {
 } from './studio-project-portability.js';
 import {
     assignStoryChat,
+    editableSceneFromPlan,
+    normalizeSceneBrief,
     normalizeStoryProject,
     normalizeStoryProjects,
     storyProjectStoryKey,
@@ -40,38 +42,55 @@ function downloadProject(project) {
 }
 
 export function storyProjectTabMarkup() {
+    return '<button class="menu_button amy-studio-tab amy-studio-tab-primary" data-tab="scene" data-i18n="amyCreatorStudio.studio.tab.scene">Current scene</button>';
+}
+
+export function storyProjectAdvancedTabMarkup() {
     return '<button class="menu_button amy-studio-tab" data-tab="project" data-i18n="amyCreatorStudio.studio.tab.project">Projects</button>';
 }
 
 export function storyProjectMarkup() {
     return [
-        '<section data-amy-tab="project" class="displayNone">',
+        '<div class="amy-studio-context-bar">',
         '<label><span data-i18n="amyCreatorStudio.studio.project.select">Project to review</span><select id="amy-studio-project-select" class="text_pole"></select></label>',
-        '<div class="amy-studio-ready-panel">',
-        '<h4 data-i18n="amyCreatorStudio.studio.project.readiness">Current chat writing readiness</h4>',
-        '<label><span data-i18n="amyCreatorStudio.studio.project.sceneTarget">Current scene target words</span><input id="amy-studio-project-scene-words" class="text_pole" type="number" min="200" max="5000"></label>',
-        '<div class="flex-container"><button id="amy-studio-project-prepare" class="menu_button" data-i18n="amyCreatorStudio.studio.project.prepare">Prepare current chat for writing</button><button id="amy-studio-project-adjust-focus" class="menu_button" data-i18n="amyCreatorStudio.studio.project.adjustFocus">Adjust chapter / scene focus</button></div>',
-        '<small data-i18n="amyCreatorStudio.studio.project.prepareNote">One confirmation binds the chat, loads the project plot and Writing Profile when present, selects a valid current scene, and activates one deduplicated writing context. Character and World Info references remain reusable and are not copied.</small>',
-        '<small id="amy-studio-project-preparation-status"></small>',
-        '<div class="flex-container"><button id="amy-studio-project-apply-capacity" class="menu_button" data-i18n="amyCreatorStudio.studio.project.applyCapacity">Apply recommended writing capacity</button><button id="amy-studio-project-stage-scene" class="menu_button" data-i18n="amyCreatorStudio.studio.project.stageScene">Put current scene request in the chat input</button></div>',
-        '<pre id="amy-studio-project-preparation-receipt" class="amy-studio-preparation-receipt"></pre>',
-        '<div class="flex-container"><button id="amy-studio-project-bind" class="menu_button" data-i18n="amyCreatorStudio.studio.project.bind">Bind project to current chat</button><button id="amy-studio-project-unbind" class="menu_button" data-i18n="amyCreatorStudio.studio.project.unbind">Unbind current chat</button></div>',
         '<small id="amy-studio-project-binding-status"></small>',
         '</div>',
-        '<div class="flex-container">',
-        '<button id="amy-studio-project-new" class="menu_button" data-i18n="amyCreatorStudio.studio.project.new">New project</button>',
-        '<button id="amy-studio-project-duplicate" class="menu_button" data-i18n="amyCreatorStudio.studio.project.duplicate">Duplicate as draft</button>',
-        '<button id="amy-studio-project-save" class="menu_button" data-i18n="amyCreatorStudio.studio.project.save">Save reviewed project</button>',
-        '<button id="amy-studio-project-export" class="menu_button" data-i18n="amyCreatorStudio.studio.project.export">Export project settings</button>',
-        '<button id="amy-studio-project-export-story" class="menu_button" data-i18n="amyCreatorStudio.studio.project.exportStory">Export story only</button>',
-        '<button id="amy-studio-project-export-full" class="menu_button" data-i18n="amyCreatorStudio.studio.project.exportFull">Export full project</button>',
-        '<label class="menu_button amy-studio-file-button"><span data-i18n="amyCreatorStudio.studio.project.import">Import project settings / portable package</span><input id="amy-studio-project-import" type="file" accept=".json,.zip,.amy-story.zip,application/json,application/zip"></label>',
+        '<section data-amy-tab="scene" class="amy-studio-scene-workspace">',
+        '<div class="amy-studio-scene-hero">',
+        '<span class="amy-studio-eyebrow" data-i18n="amyCreatorStudio.studio.scene.eyebrow">Current scene workspace</span>',
+        '<h3 id="amy-studio-scene-focus"></h3>',
+        '<p id="amy-studio-scene-brief-preview" class="amy-studio-scene-brief-preview"></p>',
+        '<small id="amy-studio-scene-brief-source"></small>',
+        '<div class="amy-studio-primary-actions">',
+        '<button id="amy-studio-scene-edit" class="menu_button amy-studio-primary-button" data-i18n="amyCreatorStudio.studio.scene.edit">Edit current scene</button>',
+        '<button id="amy-studio-scene-prepare-write" class="menu_button amy-studio-primary-button" data-i18n="amyCreatorStudio.studio.scene.prepareWrite">Prepare and write</button>',
+        '<button id="amy-studio-project-adjust-focus" class="menu_button" data-i18n="amyCreatorStudio.studio.project.adjustFocus">Adjust chapter / scene focus</button>',
         '</div>',
+        '<small data-i18n="amyCreatorStudio.studio.scene.prepareWriteNote">Prepare and write refreshes the protected context, then places a prose request in the chat input for final review.</small>',
+        '</div>',
+        '<div class="amy-studio-scene-settings">',
+        '<label><span data-i18n="amyCreatorStudio.studio.project.sceneTarget">Current scene target words</span><input id="amy-studio-project-scene-words" class="text_pole" type="number" min="200" max="5000"></label>',
+        '<div id="amy-studio-scene-context-receipt" class="amy-studio-context-receipt"></div>',
+        '</div>',
+        '<small id="amy-studio-project-preparation-status"></small>',
+        '<details class="amy-studio-secondary-panel"><summary data-i18n="amyCreatorStudio.studio.scene.technical">Preparation details</summary>',
+        '<div class="flex-container"><button id="amy-studio-project-prepare" class="menu_button" data-i18n="amyCreatorStudio.studio.project.prepare">Prepare current chat for writing</button><button id="amy-studio-project-apply-capacity" class="menu_button" data-i18n="amyCreatorStudio.studio.project.applyCapacity">Apply recommended writing capacity</button><button id="amy-studio-project-stage-scene" class="menu_button" data-i18n="amyCreatorStudio.studio.project.stageScene">Put current scene request in the chat input</button></div>',
+        '<small data-i18n="amyCreatorStudio.studio.project.prepareNote">One confirmation binds the chat, loads the project plot and Writing Profile when present, selects a valid current scene, and activates one deduplicated writing context. Character and World Info references remain reusable and are not copied.</small>',
+        '<pre id="amy-studio-project-preparation-receipt" class="amy-studio-preparation-receipt"></pre>',
+        '</details>',
+        '</section>',
+        '<section data-amy-tab="project" class="displayNone">',
+        '<div class="amy-studio-section-heading"><div><span class="amy-studio-eyebrow" data-i18n="amyCreatorStudio.studio.project.eyebrow">Project assets</span><h3 data-i18n="amyCreatorStudio.studio.project.heading">Novel project settings</h3></div><div class="flex-container"><button id="amy-studio-project-bind" class="menu_button" data-i18n="amyCreatorStudio.studio.project.bind">Bind project to current chat</button><button id="amy-studio-project-unbind" class="menu_button" data-i18n="amyCreatorStudio.studio.project.unbind">Unbind current chat</button></div></div>',
+        '<details open class="amy-studio-secondary-panel"><summary data-i18n="amyCreatorStudio.studio.project.basic">Basic information</summary>',
+        '<div class="flex-container"><button id="amy-studio-project-new" class="menu_button" data-i18n="amyCreatorStudio.studio.project.new">New project</button><button id="amy-studio-project-duplicate" class="menu_button" data-i18n="amyCreatorStudio.studio.project.duplicate">Duplicate as draft</button><button id="amy-studio-project-save" class="menu_button amy-studio-primary-button" data-i18n="amyCreatorStudio.studio.project.save">Save reviewed project</button></div>',
         '<div class="amy-studio-writing-grid">',
         '<label><span data-i18n="amyCreatorStudio.studio.project.name">Project name</span><input id="amy-studio-project-name" class="text_pole"></label>',
         '<label><span data-i18n="amyCreatorStudio.studio.project.tags">Tags</span><input id="amy-studio-project-tags" class="text_pole" data-i18n="[placeholder]amyCreatorStudio.studio.project.tagsPlaceholder"></label>',
         '</div>',
         '<label><span data-i18n="amyCreatorStudio.studio.project.description">Short description</span><textarea id="amy-studio-project-description" class="text_pole" rows="3"></textarea></label>',
+        '<label><span data-i18n="amyCreatorStudio.studio.project.notes">Project notes</span><textarea id="amy-studio-project-notes" class="text_pole" rows="4"></textarea></label>',
+        '</details>',
+        '<details class="amy-studio-secondary-panel"><summary data-i18n="amyCreatorStudio.studio.project.references">Characters, worlds, and defaults</summary>',
         '<label><span data-i18n="amyCreatorStudio.studio.project.characters">Character references, one per line</span><textarea id="amy-studio-project-characters" class="text_pole" rows="5"></textarea></label>',
         '<small data-i18n="amyCreatorStudio.studio.project.charactersNote">Choose an existing character below, then save the reviewed project. Character cards remain reusable across projects.</small>',
         '<div class="flex-container"><select id="amy-studio-project-character-picker" class="text_pole"></select><button id="amy-studio-project-add-selected-character" class="menu_button" data-i18n="amyCreatorStudio.studio.project.addSelectedCharacter">Add selected character</button><button id="amy-studio-project-add-character" class="menu_button" data-i18n="amyCreatorStudio.studio.project.addCurrentCharacter">Add current character</button></div>',
@@ -79,18 +98,22 @@ export function storyProjectMarkup() {
         '<div class="flex-container"><select id="amy-studio-project-world-picker" class="text_pole"></select><button id="amy-studio-project-add-world" class="menu_button" data-i18n="amyCreatorStudio.studio.project.addWorld">Add selected World Info</button></div>',
         '<label><span data-i18n="amyCreatorStudio.studio.project.writingProfile">Default Writing Profile template (optional)</span><select id="amy-studio-project-writing-profile" class="text_pole"></select></label>',
         '<div class="flex-container"><button id="amy-studio-project-load-writing" class="menu_button" data-i18n="amyCreatorStudio.studio.project.loadWriting">Load template as review draft</button></div>',
-        '<label><span data-i18n="amyCreatorStudio.studio.project.notes">Project notes</span><textarea id="amy-studio-project-notes" class="text_pole" rows="4"></textarea></label>',
-        '<h4 data-i18n="amyCreatorStudio.studio.project.plot">Reusable plot snapshot</h4>',
-        '<div class="flex-container">',
-        '<button id="amy-studio-project-capture-plan" class="menu_button" data-i18n="amyCreatorStudio.studio.project.capturePlan">Capture current Story Plan</button>',
-        '<button id="amy-studio-project-load-plan" class="menu_button" data-i18n="amyCreatorStudio.studio.project.loadPlan">Load project plot as review draft</button>',
-        '<button id="amy-studio-project-clear-plan" class="menu_button" data-i18n="amyCreatorStudio.studio.project.clearPlan">Clear plot snapshot</button>',
-        '</div>',
+        '</details>',
+        '<details class="amy-studio-secondary-panel"><summary data-i18n="amyCreatorStudio.studio.project.plot">Reusable plot snapshot</summary>',
+        '<div class="flex-container"><button id="amy-studio-project-capture-plan" class="menu_button" data-i18n="amyCreatorStudio.studio.project.capturePlan">Capture current Story Plan</button><button id="amy-studio-project-load-plan" class="menu_button" data-i18n="amyCreatorStudio.studio.project.loadPlan">Load project plot as review draft</button><button id="amy-studio-project-clear-plan" class="menu_button" data-i18n="amyCreatorStudio.studio.project.clearPlan">Clear plot snapshot</button></div>',
         '<small id="amy-studio-project-plan-status"></small>',
-        '<h4 data-i18n="amyCreatorStudio.studio.project.stories">Private generated stories</h4>',
+        '</details>',
+        '<details class="amy-studio-secondary-panel"><summary data-i18n="amyCreatorStudio.studio.project.stories">Private generated stories</summary>',
         '<div id="amy-studio-project-stories" class="amy-studio-audit"></div>',
         '<small data-i18n="amyCreatorStudio.studio.project.storiesNote">Generated prose remains in SillyTavern native user chat files. The project stores only a private chat index; story text is not copied into extension source or Git.</small>',
+        '</details>',
+        '<details class="amy-studio-secondary-panel"><summary data-i18n="amyCreatorStudio.studio.project.portability">Migration and backup</summary><div class="flex-container">',
+        '<button id="amy-studio-project-export" class="menu_button" data-i18n="amyCreatorStudio.studio.project.export">Export project settings</button>',
+        '<button id="amy-studio-project-export-story" class="menu_button" data-i18n="amyCreatorStudio.studio.project.exportStory">Export story only</button>',
+        '<button id="amy-studio-project-export-full" class="menu_button" data-i18n="amyCreatorStudio.studio.project.exportFull">Export full project</button>',
+        '<label class="menu_button amy-studio-file-button"><span data-i18n="amyCreatorStudio.studio.project.import">Import project settings / portable package</span><input id="amy-studio-project-import" type="file" accept=".json,.zip,.amy-story.zip,application/json,application/zip"></label>',
         '<small data-i18n="amyCreatorStudio.studio.project.portabilityNote">Story-only packages contain native JSONL prose and minimal chapter metadata. Full packages also contain referenced character cards, World Info, groups, plot, and Writing Profile. Import creates copies and never overwrites local resources.</small>',
+        '</div></details>',
         '<small data-i18n="amyCreatorStudio.studio.project.note">Projects organize reusable references and defaults; they do not own characters or World Info. The same resource may appear in several projects, and binding never injects or replaces content automatically.</small>',
         '</section>',
     ].join('');
@@ -214,6 +237,42 @@ export function bindStoryProject(deps) {
         $('#amy-studio-project-binding-status').text(status);
     }
 
+    function renderSceneWorkspace() {
+        const project = selectedProject();
+        const state = deps.getChatState();
+        const chapter = state.storyPlan?.chapters.find(item => item.id === state.storyPlanProgress?.chapterId);
+        const scene = chapter?.scenes.find(item => item.id === state.storyPlanProgress?.sceneId);
+        const storedBrief = normalizeSceneBrief(state.sceneBrief);
+        const brief = editableSceneFromPlan(chapter, scene, storedBrief);
+        const hasEditedScene = Boolean(storedBrief.updatedAt)
+            && storedBrief.chapterId === chapter?.id
+            && storedBrief.sceneId === (scene?.id ?? '');
+        $('#amy-studio-scene-focus').text(chapter
+            ? `${chapter.title}${scene ? ` / ${scene.title}` : ''}`
+            : tr('studio.scene.noFocus'));
+        $('#amy-studio-scene-brief-preview').text(brief.summary || tr(hasEditedScene ? 'studio.scene.editedEmpty' : 'studio.scene.emptyBrief'));
+        $('#amy-studio-scene-brief-source').text(chapter
+            ? tr(hasEditedScene ? 'studio.scene.sourceEdited' : 'studio.scene.sourcePlan')
+            : '');
+        const receipt = $('#amy-studio-scene-context-receipt').empty();
+        const relationships = state.storyState?.relationships ?? [];
+        const items = [
+            tr('studio.scene.receiptProject', { name: project?.name ?? tr('studio.project.optionalSkipped') }),
+            tr('studio.scene.receiptCast', { value: brief.cast.length ? brief.cast.join(', ') : tr('studio.scene.auto') }),
+            tr('studio.scene.receiptRelationships', {
+                value: relationships.length
+                    ? tr('studio.scene.currentCount', { count: relationships.length })
+                    : tr('studio.scene.openingFallback'),
+            }),
+            tr('studio.scene.receiptRecent', { value: state.storyState?.scene?.summary ? tr('studio.scene.included') : tr('studio.scene.none') }),
+            tr('studio.scene.receiptReferences', { count: state.sceneReferenceSnapshot?.length ?? 0 }),
+        ];
+        for (const item of items) $('<span>').addClass('amy-studio-context-chip').text(item).appendTo(receipt);
+        const usable = Boolean(project && deps.getChatId());
+        $('#amy-studio-scene-edit').prop('disabled', !usable || !chapter);
+        $('#amy-studio-scene-prepare-write').prop('disabled', !usable);
+    }
+
     function renderPreparationStatus() {
         const project = selectedProject();
         const state = deps.getChatState();
@@ -221,7 +280,7 @@ export function bindStoryProject(deps) {
         if (!project || !deps.getChatId()) {
             status.attr('data-ready', 'false').text(tr('studio.project.prepareUnavailable'));
             $('#amy-studio-project-preparation-receipt').text('');
-            $('#amy-studio-project-apply-capacity, #amy-studio-project-stage-scene').prop('disabled', true);
+            $('#amy-studio-project-apply-capacity, #amy-studio-project-stage-scene, #amy-studio-scene-prepare-write').prop('disabled', true);
             return;
         }
         const bound = state.storyProjectId === project.id;
@@ -290,6 +349,7 @@ export function bindStoryProject(deps) {
         }));
         $('#amy-studio-project-apply-capacity').prop('disabled', capacity.ready);
         $('#amy-studio-project-stage-scene').prop('disabled', !ready || !state.storyPlanProgress?.active);
+        $('#amy-studio-scene-prepare-write').prop('disabled', false);
     }
 
     function renderStories() {
@@ -328,6 +388,7 @@ export function bindStoryProject(deps) {
         renderWritingProfilePicker();
         renderPlanStatus();
         renderBindingStatus();
+        renderSceneWorkspace();
         renderPreparationStatus();
         renderStories();
     }
@@ -342,10 +403,130 @@ export function bindStoryProject(deps) {
         if (storyKey !== currentStoryKey()) throw new Error(tr('studio.error.projectWrongChat'));
     }
 
+    async function editCurrentSceneBrief() {
+        const storyKey = currentStoryKey();
+        const state = deps.getChatState();
+        const chapter = state.storyPlan?.chapters.find(item => item.id === state.storyPlanProgress?.chapterId);
+        const scene = chapter?.scenes.find(item => item.id === state.storyPlanProgress?.sceneId);
+        if (!chapter) throw new Error(tr('studio.error.sceneFocusMissing'));
+        const brief = editableSceneFromPlan(chapter, scene, state.sceneBrief);
+        const editor = $([
+            '<div class="amy-studio-scene-editor">',
+            `<h3>${escapeHtml(tr('studio.scene.editorTitle', { focus: `${chapter.title}${scene ? ` / ${scene.title}` : ''}` }))}</h3>`,
+            '<div class="amy-studio-scene-editor-intro">',
+            `<p>${escapeHtml(tr('studio.scene.editorNote'))}</p>`,
+            `<button type="button" class="menu_button amy-studio-scene-reload-plan">${escapeHtml(tr('studio.scene.reloadPlan'))}</button>`,
+            '</div>',
+            `<label>${escapeHtml(tr('studio.scene.summary'))}<textarea name="summary" class="text_pole" rows="6" placeholder="${escapeHtml(tr('studio.scene.summaryPlaceholder'))}"></textarea></label>`,
+            '<div class="amy-studio-writing-grid">',
+            `<label>${escapeHtml(tr('studio.scene.cast'))}<input name="cast" class="text_pole"></label>`,
+            `<label>${escapeHtml(tr('studio.scene.time'))}<input name="time" class="text_pole"></label>`,
+            `<label>${escapeHtml(tr('studio.scene.location'))}<input name="location" class="text_pole"></label>`,
+            '</div>',
+            `<label>${escapeHtml(tr('studio.scene.mustInclude'))}<textarea name="mustInclude" class="text_pole" rows="4"></textarea></label>`,
+            `<label>${escapeHtml(tr('studio.scene.avoid'))}<textarea name="avoid" class="text_pole" rows="4"></textarea></label>`,
+            `<label>${escapeHtml(tr('studio.scene.ending'))}<textarea name="ending" class="text_pole" rows="3"></textarea></label>`,
+            '</div>',
+        ].join(''));
+        const fillEditor = value => {
+            editor.find('[name="summary"]').val(value.summary);
+            editor.find('[name="cast"]').val(value.cast.join(', '));
+            editor.find('[name="time"]').val(value.time);
+            editor.find('[name="location"]').val(value.location);
+            editor.find('[name="mustInclude"]').val(value.mustInclude.join('\n'));
+            editor.find('[name="avoid"]').val(value.avoid.join('\n'));
+            editor.find('[name="ending"]').val(value.ending);
+        };
+        fillEditor(brief);
+        editor.find('.amy-studio-scene-reload-plan').on('click', () => {
+            fillEditor(editableSceneFromPlan(chapter, scene, null));
+        });
+        const popup = new Popup(editor, POPUP_TYPE.CONFIRM, '', {
+            okButton: tr('studio.scene.save'),
+            cancelButton: tr('studio.scene.cancel'),
+            wide: true,
+            large: true,
+            allowVerticalScrolling: true,
+        });
+        const result = await popup.show();
+        if (result !== POPUP_RESULT.AFFIRMATIVE) return;
+        assertSameStory(storyKey);
+        const activeState = deps.getChatState();
+        activeState.sceneBrief = normalizeSceneBrief({
+            chapterId: chapter.id,
+            sceneId: scene?.id ?? '',
+            summary: editor.find('[name="summary"]').val(),
+            cast: String(editor.find('[name="cast"]').val() ?? '').split(/\r?\n|,/),
+            time: editor.find('[name="time"]').val(),
+            location: editor.find('[name="location"]').val(),
+            mustInclude: lines(editor.find('[name="mustInclude"]').val()),
+            avoid: lines(editor.find('[name="avoid"]').val()),
+            ending: editor.find('[name="ending"]').val(),
+            updatedAt: new Date().toISOString(),
+        });
+        activeState.sceneReferenceSnapshot = [];
+        activeState.storyPreparationVerification = {
+            projectId: '', chapterId: '', sceneId: '', profileId: '', proof: '', verifiedAt: '',
+        };
+        await deps.persistChat({ immediate: true });
+        assertSameStory(storyKey);
+        deps.recordAudit('story_scene_brief_save', `${chapter.id}:${scene?.id ?? '-'}`);
+        render();
+        deps.renderParent();
+        toastr.success(tr('studio.toast.sceneBriefSaved'), tr('studio.error.actionTitle'));
+    }
+
+    async function prepareSelectedProject({ stageRequest = false } = {}) {
+        const project = selectedProject();
+        if (!project) throw new Error(tr('studio.error.projectMissing'));
+        const chatId = deps.getChatId();
+        if (!chatId) throw new Error(tr('studio.error.openChatProject'));
+        const storyKey = currentStoryKey();
+        const profile = (deps.getSettings().writingProfileTemplates ?? [])
+            .find(item => item.id === project.writingProfileId);
+        if (project.writingProfileId && !profile) throw new Error(tr('studio.error.projectWritingMissing'));
+        const confirmed = await Popup.show.confirm(
+            tr('studio.popup.prepareProjectTitle', { name: escapeHtml(project.name) }),
+            tr('studio.popup.prepareProjectBody', {
+                plan: project.storyPlan ? escapeHtml(project.storyPlan.title) : tr('studio.project.optionalSkipped'),
+                profile: profile ? escapeHtml(profile.name) : tr('studio.project.optionalSkipped'),
+            }),
+        );
+        if (!confirmed) return;
+        assertSameStory(storyKey);
+        const result = await deps.prepareCurrentChat(project);
+        assertSameStory(storyKey);
+        const settings = deps.getSettings();
+        settings.storyProjects = assignStoryChat(settings.storyProjects, project.id, {
+            ...currentStory(),
+            chatId,
+            linkedAt: new Date().toISOString(),
+        });
+        deps.persistSettings();
+        deps.recordAudit('story_project_prepare', `${project.id}:${result.chapterId || '-'}:${result.profileId || '-'}`);
+        const canStage = stageRequest && deps.getGenerationReadiness().ready && deps.isWritingContextFresh();
+        if (canStage) {
+            const request = deps.getCurrentSceneRequest();
+            deps.stageCurrentSceneRequest(request);
+            deps.recordAudit('story_scene_request_stage', text(chatId));
+        }
+        render();
+        deps.renderParent();
+        toastr.success(tr(canStage ? 'studio.toast.scenePreparedToWrite' : 'studio.toast.projectPrepared', {
+            name: project.name,
+            chapter: result.chapterTitle || tr('studio.project.optionalSkipped'),
+        }), tr('studio.error.actionTitle'));
+        if (stageRequest && !canStage) {
+            toastr.warning(tr('studio.toast.scenePreparedCapacityPending'), tr('studio.error.actionTitle'));
+        }
+    }
+
     $('#amy-studio-project-select').on('change', function () {
         selectedId = String($(this).val() ?? '');
         fillFields(selectedProject());
         renderBindingStatus();
+        renderSceneWorkspace();
+        renderPreparationStatus();
         renderStories();
     });
 
@@ -449,41 +630,9 @@ export function bindStoryProject(deps) {
         toastr.success(tr('studio.toast.projectBound', { name: project.name }), tr('studio.error.actionTitle'));
     });
 
-    deps.bindAction('#amy-studio-project-prepare', async () => {
-        const project = selectedProject();
-        if (!project) throw new Error(tr('studio.error.projectMissing'));
-        const chatId = deps.getChatId();
-        if (!chatId) throw new Error(tr('studio.error.openChatProject'));
-        const storyKey = currentStoryKey();
-        const profile = (deps.getSettings().writingProfileTemplates ?? [])
-            .find(item => item.id === project.writingProfileId);
-        if (project.writingProfileId && !profile) throw new Error(tr('studio.error.projectWritingMissing'));
-        const confirmed = await Popup.show.confirm(
-            tr('studio.popup.prepareProjectTitle', { name: escapeHtml(project.name) }),
-            tr('studio.popup.prepareProjectBody', {
-                plan: project.storyPlan ? escapeHtml(project.storyPlan.title) : tr('studio.project.optionalSkipped'),
-                profile: profile ? escapeHtml(profile.name) : tr('studio.project.optionalSkipped'),
-            }),
-        );
-        if (!confirmed) return;
-        assertSameStory(storyKey);
-        const result = await deps.prepareCurrentChat(project);
-        assertSameStory(storyKey);
-        const settings = deps.getSettings();
-        settings.storyProjects = assignStoryChat(settings.storyProjects, project.id, {
-            ...currentStory(),
-            chatId,
-            linkedAt: new Date().toISOString(),
-        });
-        deps.persistSettings();
-        deps.recordAudit('story_project_prepare', `${project.id}:${result.chapterId || '-'}:${result.profileId || '-'}`);
-        render();
-        deps.renderParent();
-        toastr.success(tr('studio.toast.projectPrepared', {
-            name: project.name,
-            chapter: result.chapterTitle || tr('studio.project.optionalSkipped'),
-        }), tr('studio.error.actionTitle'));
-    });
+    deps.bindAction('#amy-studio-project-prepare', () => prepareSelectedProject());
+    deps.bindAction('#amy-studio-scene-prepare-write', () => prepareSelectedProject({ stageRequest: true }));
+    deps.bindAction('#amy-studio-scene-edit', editCurrentSceneBrief);
 
     deps.bindAction('#amy-studio-project-adjust-focus', async () => {
         $('.amy-studio-tab[data-tab="plan"]').trigger('click');

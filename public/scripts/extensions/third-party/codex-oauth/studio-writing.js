@@ -375,6 +375,7 @@ export function bindWritingControl(deps) {
             progress: useSelectedFocus ? getSelectedProgress(true) : state.storyPlanProgress,
             ledger: state.narrativeLedger,
             expectedSceneWords: state.expectedSceneWords,
+            ...(deps.getCompilationContext?.(state) ?? {}),
         });
     }
 
@@ -462,6 +463,7 @@ export function bindWritingControl(deps) {
                 progress: state.storyPlanProgress,
                 ledger: state.narrativeLedger,
                 expectedSceneWords: state.expectedSceneWords,
+                ...(deps.getCompilationContext?.(state) ?? {}),
             });
             if (current.sourceHash !== state.compiledWritingContext.sourceHash) {
                 status += ' ' + tr('studio.writing.contextStale');

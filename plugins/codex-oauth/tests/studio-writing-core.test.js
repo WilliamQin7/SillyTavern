@@ -26,9 +26,70 @@ test('current scene request is bounded, complete, and does not claim planned eve
     });
     assert.match(request, /第一章 \/ 初入公寓/);
     assert.match(request, /4000/);
+    assert.match(request, /4000 Chinese characters/);
+    assert.match(request, /±15%/);
     assert.match(request, /author intent, not as events that already happened/);
     assert.match(request, /Do not ask me to repeat the focus/);
     assert.match(request, /Output only the prose/);
+});
+
+test('reviewed editable scene replaces plan details and compiles canon before fallback references', () => {
+    const result = compileWritingContext({
+        profile: profile(),
+        plan: plan(),
+        progress: { chapterId: 'chapter-1', sceneId: 'scene-1' },
+        sceneBrief: {
+            chapterId: 'chapter-1',
+            sceneId: 'scene-1',
+            summary: 'Begin after dinner and make the three rules concrete.',
+            cast: ['Mira', 'Ivo'],
+            mustInclude: ['Ivo already lives in the guest room'],
+            avoid: ['Do not write them as strangers'],
+            updatedAt: '2026-08-20T02:00:00.000Z',
+        },
+        reviewedContinuity: 'Mira → Ivo: cautious allies after the previous scene.',
+        projectReferences: [{
+            label: 'Opening relationship',
+            source: 'Shared world',
+            content: 'Mira initially treats Ivo as a temporary tenant.',
+        }],
+        budgetChars: 6000,
+    });
+    const canonIndex = result.text.indexOf('CURRENT REVIEWED CONTINUITY — CANON');
+    const fallbackIndex = result.text.indexOf('STABLE PROJECT REFERENCES — FALLBACK ONLY');
+    assert.ok(canonIndex >= 0 && fallbackIndex > canonIndex);
+    assert.match(result.text, /Begin after dinner/);
+    assert.match(result.text, /Do not write them as strangers/);
+    assert.doesNotMatch(result.text, /Mira questions Ivo/);
+    assert.doesNotMatch(result.text, /Mira reaches the port/);
+    assert.match(result.text, /reviewed editable scene below replaces/);
+    assert.match(result.text, /overrides older or initial relationship descriptions/);
+    assert.match(result.text, /only where current reviewed continuity does not supersede them/);
+    assert.ok(result.text.length <= 6000);
+});
+
+test('long scene overlays remain inside the compiled context budget', () => {
+    const result = compileWritingContext({
+        profile: profile(),
+        plan: plan(),
+        progress: { chapterId: 'chapter-1', sceneId: 'scene-1' },
+        sceneBrief: {
+            chapterId: 'chapter-1',
+            sceneId: 'scene-1',
+            summary: 'brief '.repeat(1000),
+            mustInclude: Array.from({ length: 30 }, (_, index) => `beat-${index} ` + 'detail '.repeat(100)),
+            updatedAt: '2026-08-20T02:00:00.000Z',
+        },
+        reviewedContinuity: 'canon '.repeat(1000),
+        projectReferences: Array.from({ length: 12 }, (_, index) => ({
+            label: `reference-${index}`,
+            content: 'stable '.repeat(500),
+        })),
+        budgetChars: 6000,
+    });
+    assert.ok(result.text.length <= 6000);
+    assert.match(result.text, /CURRENT REVIEWED CONTINUITY — CANON/);
+    assert.match(result.text, /CURRENT EDITED SCENE — NOT CANON/);
 });
 
 function profile(overrides = {}) {

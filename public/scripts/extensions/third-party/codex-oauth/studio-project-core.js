@@ -1,6 +1,7 @@
 import { extractJsonObject, normalizeStoryPlan } from './studio-core.js';
 
 export const STORY_PROJECT_SCHEMA = 'amy_story_project_v1';
+export const SCENE_BRIEF_SCHEMA = 'amy_scene_brief_v1';
 
 const MIN_LONGFORM_PROMPT_TOKENS = 4096;
 const MIN_LONGFORM_RESPONSE_TOKENS = 800;
@@ -189,6 +190,8 @@ export function normalizeStoryProjectChatState(value) {
     return {
         ...input,
         storyProjectId: text(input.storyProjectId, 120),
+        sceneBrief: normalizeSceneBrief(input.sceneBrief),
+        sceneReferenceSnapshot: normalizeSceneReferenceSnapshot(input.sceneReferenceSnapshot),
         storyPreparationVerification: {
             projectId: text(verification.projectId, 120),
             chapterId: text(verification.chapterId, 120),
@@ -198,6 +201,58 @@ export function normalizeStoryProjectChatState(value) {
             verifiedAt: text(verification.verifiedAt, 80),
         },
     };
+}
+
+export function normalizeSceneBrief(value) {
+    const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    return {
+        schema: SCENE_BRIEF_SCHEMA,
+        chapterId: text(input.chapterId, 120),
+        sceneId: text(input.sceneId, 120),
+        summary: text(input.summary, 4000),
+        cast: stringList(input.cast, 30),
+        time: text(input.time, 300),
+        location: text(input.location, 300),
+        mustInclude: stringList(input.mustInclude, 30),
+        avoid: stringList(input.avoid, 30),
+        ending: text(input.ending, 1000),
+        updatedAt: text(input.updatedAt, 80),
+    };
+}
+
+export function editableSceneFromPlan(chapterValue, sceneValue, briefValue) {
+    const chapter = chapterValue && typeof chapterValue === 'object' && !Array.isArray(chapterValue) ? chapterValue : {};
+    const scene = sceneValue && typeof sceneValue === 'object' && !Array.isArray(sceneValue) ? sceneValue : {};
+    const brief = normalizeSceneBrief(briefValue);
+    const chapterId = text(chapter.id, 120);
+    const sceneId = text(scene.id, 120);
+    const savedForFocus = Boolean(brief.updatedAt)
+        && brief.chapterId === chapterId
+        && brief.sceneId === sceneId;
+    if (savedForFocus) return brief;
+    return normalizeSceneBrief({
+        chapterId,
+        sceneId,
+        summary: text(scene.summary, 4000) || text(chapter.summary, 4000),
+        mustInclude: stringList([...stringList(chapter.goals, 30), ...stringList(scene.goals, 30)], 30),
+        avoid: stringList([...stringList(chapter.constraints, 30), ...stringList(scene.constraints, 30)], 30),
+    });
+}
+
+function normalizeSceneReferenceSnapshot(value) {
+    const result = [];
+    for (const item of Array.isArray(value) ? value : []) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+        const content = text(item.content, 2000);
+        if (!content) continue;
+        result.push({
+            source: text(item.source, 300),
+            label: text(item.label, 200),
+            content,
+        });
+        if (result.length >= 12) break;
+    }
+    return result;
 }
 
 export function upsertStoryProject(projectsValue, projectValue) {

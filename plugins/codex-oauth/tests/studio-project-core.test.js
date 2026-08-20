@@ -3,7 +3,9 @@ import test from 'node:test';
 
 import {
     assignStoryChat,
+    editableSceneFromPlan,
     evaluateStoryGenerationReadiness,
+    normalizeSceneBrief,
     normalizeStoryProject,
     normalizeStoryProjectChatState,
     normalizeStoryProjects,
@@ -63,6 +65,20 @@ test('Story Projects are optional lightweight manifests', () => {
     assert.equal(normalizeStoryProject({ schema: 'another_format', name: 'Wrong' }), null);
     assert.deepEqual(normalizeStoryProjectChatState({}), {
         storyProjectId: '',
+        sceneBrief: {
+            schema: 'amy_scene_brief_v1',
+            chapterId: '',
+            sceneId: '',
+            summary: '',
+            cast: [],
+            time: '',
+            location: '',
+            mustInclude: [],
+            avoid: [],
+            ending: '',
+            updatedAt: '',
+        },
+        sceneReferenceSnapshot: [],
         storyPreparationVerification: {
             projectId: '',
             chapterId: '',
@@ -83,6 +99,54 @@ test('Story Projects are optional lightweight manifests', () => {
     assert.deepEqual(project.worlds, ['Moving Islands', 'Shared Cosmology']);
     assert.deepEqual(project.tags, ['adventure', 'shared-world']);
     assert.equal(project.storyPlan, null);
+});
+
+test('scene briefs are bounded private chat overlays instead of project plan mutations', () => {
+    const brief = normalizeSceneBrief({
+        chapterId: 'chapter-1',
+        sceneId: 'scene-1',
+        summary: 'Begin after dinner.',
+        cast: 'Mira, Ivo, Mira',
+        mustInclude: ['A key changes hands'],
+        avoid: ['Do not resolve the mystery'],
+        ending: 'Stop at the locked door.',
+        ignored: 'not persisted',
+    });
+    assert.deepEqual(brief.cast, ['Mira', 'Ivo']);
+    assert.equal(brief.summary, 'Begin after dinner.');
+    assert.equal(brief.ending, 'Stop at the locked door.');
+    assert.equal(Object.hasOwn(brief, 'ignored'), false);
+});
+
+test('editable scenes start from the complete focused plan and preserve reviewed edits', () => {
+    const chapter = {
+        id: 'chapter-1',
+        summary: 'Establish the apartment rules.',
+        goals: ['Show the key', 'Keep the power imbalance visible'],
+        constraints: ['Do not reveal the later reversal'],
+    };
+    const scene = {
+        id: 'scene-1',
+        summary: 'Set the rules after dinner.',
+        goals: ['Show the key'],
+        constraints: ['Do not skip the negotiation'],
+    };
+    const initial = editableSceneFromPlan(chapter, scene, null);
+    assert.equal(initial.summary, 'Set the rules after dinner.');
+    assert.deepEqual(initial.mustInclude, ['Show the key', 'Keep the power imbalance visible']);
+    assert.deepEqual(initial.avoid, ['Do not reveal the later reversal', 'Do not skip the negotiation']);
+
+    const edited = editableSceneFromPlan(chapter, scene, {
+        chapterId: 'chapter-1',
+        sceneId: 'scene-1',
+        summary: 'Begin when the tenant returns with groceries.',
+        mustInclude: [],
+        avoid: [],
+        updatedAt: '2026-08-20T02:00:00.000Z',
+    });
+    assert.equal(edited.summary, 'Begin when the tenant returns with groceries.');
+    assert.deepEqual(edited.mustInclude, []);
+    assert.deepEqual(edited.avoid, []);
 });
 
 test('chat preparation verification is bounded and remains private chat state', () => {

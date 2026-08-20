@@ -7,8 +7,8 @@ import { getContext } from '../../../st-context.js';
 import { escapeHtml } from '../../../utils.js';
 import { createWorldInfoEntry, getWorldInfoPrompt, loadWorldInfo, saveWorldInfo, updateWorldInfoList, world_info_budget, world_info_budget_cap } from '../../../world-info.js';
 import { tr, translateStudioValidationErrors } from './i18n.js';
-import { evaluateStoryGenerationReadiness, normalizeStoryProjectChatState, normalizeStoryProjectSettings, storyProjectStoryKey } from './studio-project-core.js';
-import { bindStoryProject, storyProjectMarkup, storyProjectTabMarkup } from './studio-project.js';
+import { evaluateStoryGenerationReadiness, normalizeSceneBrief, normalizeStoryProjectChatState, normalizeStoryProjectSettings, storyProjectStoryKey } from './studio-project-core.js';
+import { bindStoryProject, storyProjectAdvancedTabMarkup, storyProjectMarkup, storyProjectTabMarkup } from './studio-project.js';
 import {
     compileWritingContext,
     buildCurrentSceneWritingRequest,
@@ -348,6 +348,97 @@ function currentGenerationReadiness() {
     });
 }
 
+function currentSceneCompilationInputs(state = chatState()) {
+    return {
+        sceneBrief: state.sceneBrief,
+        reviewedContinuity: storyStateToLoreContent(state.storyState),
+        projectReferences: state.sceneReferenceSnapshot,
+        budgetChars: 6000,
+    };
+}
+
+function alignSceneBriefToFocus(state, plan, progress) {
+    const focus = activeStoryPlanContext(plan, progress);
+    if (!focus?.chapter) return normalizeSceneBrief(state.sceneBrief);
+    const current = normalizeSceneBrief(state.sceneBrief);
+    const chapterId = focus.chapter.id ?? '';
+    const sceneId = focus.scene?.id ?? '';
+    const changed = Boolean(current.chapterId || current.sceneId)
+        && (current.chapterId !== chapterId || current.sceneId !== sceneId);
+    return normalizeSceneBrief({
+        ...(changed ? {} : current),
+        chapterId,
+        sceneId,
+    });
+}
+
+function entryKeys(entry) {
+    const raw = Array.isArray(entry?.key) ? entry.key : String(entry?.key ?? '').split(/\r?\n|,/);
+    return raw.map(item => String(item ?? '').trim()).filter(Boolean);
+}
+
+async function collectProjectSceneReferences(project, state, plan, progress) {
+    if (!project?.worlds?.length) return [];
+    const focus = activeStoryPlanContext(plan, progress);
+    const brief = alignSceneBriefToFocus(state, plan, progress);
+    const projectCharacters = project.characters
+        .map(ref => characters.find(character => character?.avatar === ref || character?.name === ref)?.name ?? '')
+        .filter(Boolean);
+    const focusText = JSON.stringify({
+        chapter: focus?.chapter ?? null,
+        scene: focus?.scene ?? null,
+        brief,
+    }).toLocaleLowerCase();
+    const cast = [...new Set([
+        ...brief.cast,
+        ...(state.storyState?.scene?.presentCharacters ?? []),
+        ...projectCharacters.filter(name => focusText.includes(name.toLocaleLowerCase())),
+    ])].slice(0, 20);
+    const candidates = [];
+    for (const [worldIndex, worldName] of project.worlds.slice(0, 20).entries()) {
+        let world;
+        try {
+            world = await loadWorldInfo(worldName);
+        } catch (error) {
+            console.warn('[amy-studio] Failed to load a project World Info reference', worldName, error);
+            continue;
+        }
+        for (const [entryIndex, entry] of Object.values(world?.entries ?? {}).entries()) {
+            if (entry?.disable === true || !String(entry?.content ?? '').trim()) continue;
+            const content = String(entry.content).trim();
+            const label = String(entry.comment ?? '').trim();
+            const keys = entryKeys(entry);
+            const keywordMatch = keys.some(key => focusText.includes(key.toLocaleLowerCase()));
+            const castMatch = cast.some(name => {
+                const term = name.toLocaleLowerCase();
+                return label.toLocaleLowerCase().includes(term)
+                    || keys.some(key => key.toLocaleLowerCase() === term)
+                    || content.toLocaleLowerCase().includes(term);
+            });
+            const relationshipMatch = /关系|relationship|初始|opening/i.test([label, ...keys].join(' ')) && castMatch;
+            if (entry.constant !== true && !keywordMatch && !castMatch && !relationshipMatch) continue;
+            candidates.push({
+                source: worldName,
+                label,
+                content: content.slice(0, 1600),
+                score: (relationshipMatch ? 100 : 0) + (castMatch ? 50 : 0) + (keywordMatch ? 20 : 0) + (entry.constant === true ? 5 : 0),
+                order: worldIndex * 10000 + entryIndex,
+            });
+        }
+    }
+    candidates.sort((left, right) => right.score - left.score || left.order - right.order);
+    const selected = [];
+    let totalChars = 0;
+    for (const candidate of candidates) {
+        if (selected.length >= 10) break;
+        if (totalChars + candidate.content.length > 3200) continue;
+        const { score: _score, order: _order, ...reference } = candidate;
+        selected.push(reference);
+        totalChars += candidate.content.length;
+    }
+    return selected;
+}
+
 function currentWritingContextIsFresh() {
     const state = chatState();
     if (!state.writingControlActive || !state.writingProfile) return true;
@@ -357,6 +448,7 @@ function currentWritingContextIsFresh() {
         progress: state.storyPlanProgress,
         ledger: state.narrativeLedger,
         expectedSceneWords: state.expectedSceneWords,
+        ...currentSceneCompilationInputs(state),
     });
     return Boolean(state.compiledWritingContext?.sourceHash)
         && compiled.sourceHash === state.compiledWritingContext.sourceHash;
@@ -515,6 +607,11 @@ async function syncActiveContext(content, source, comment) {
 }
 
 async function syncActiveStoryPlan(plan, progress, source, state = chatState()) {
+    state.sceneBrief = alignSceneBriefToFocus(state, plan, progress);
+    const project = settings().storyProjects.find(item => item.id === state.storyProjectId) ?? null;
+    state.sceneReferenceSnapshot = project
+        ? await collectProjectSceneReferences(project, state, plan, progress)
+        : [];
     if (state.writingControlActive && state.writingProfile) {
         const compiled = compileWritingContext({
             profile: state.writingProfile,
@@ -522,6 +619,7 @@ async function syncActiveStoryPlan(plan, progress, source, state = chatState()) 
             progress,
             ledger: state.narrativeLedger,
             expectedSceneWords: state.expectedSceneWords,
+            ...currentSceneCompilationInputs(state),
         });
         await syncActiveContext(compiled.text, source, WRITING_CONTEXT_ENTRY_COMMENT);
         state.compiledWritingContext = compiled;
@@ -606,6 +704,9 @@ async function prepareStoryProjectChat(project) {
         && state.writingProfileSourceId.startsWith('project:');
     const activeProfile = profile
         ?? (!clearProjectWriting && state.writingControlActive ? state.writingProfile : null);
+    state.sceneBrief = alignSceneBriefToFocus(state, activePlan, activeProgress);
+    const sceneReferenceSnapshot = await collectProjectSceneReferences(project, state, activePlan, activeProgress);
+    state.sceneReferenceSnapshot = sceneReferenceSnapshot;
     const compiled = activeProfile
         ? compileWritingContext({
             profile: activeProfile,
@@ -613,6 +714,7 @@ async function prepareStoryProjectChat(project) {
             progress: activeProgress,
             ledger: state.narrativeLedger,
             expectedSceneWords: state.expectedSceneWords,
+            ...currentSceneCompilationInputs(state),
         })
         : null;
 
@@ -630,6 +732,8 @@ async function prepareStoryProjectChat(project) {
     // World Info slash commands can replace chat_metadata; never persist through the stale pre-sync object.
     const latestState = chatState();
     latestState.storyProjectId = project.id;
+    latestState.sceneBrief = state.sceneBrief;
+    latestState.sceneReferenceSnapshot = sceneReferenceSnapshot;
     if (plan) {
         latestState.storyPlan = plan;
         latestState.storyPlanProgress = progress;
@@ -1095,17 +1199,24 @@ function createPanel() {
             </div>
             <div class="inline-drawer-content">
                 <small data-i18n="amyCreatorStudio.studio.subtitle">Codex-powered character authoring, consistent visual assets, reviewed memory, and confirmation-gated tools.</small>
-                <div class="amy-studio-tabs flex-container">
+                <div class="amy-studio-nav-label" data-i18n="amyCreatorStudio.studio.nav.daily">Daily writing</div>
+                <div class="amy-studio-tabs amy-studio-tabs-primary flex-container">
                     ${storyProjectTabMarkup()}
-                    <button class="menu_button amy-studio-tab" data-tab="character" data-i18n="amyCreatorStudio.studio.tab.character">Character</button>
-                    <button class="menu_button amy-studio-tab" data-tab="assets" data-i18n="amyCreatorStudio.studio.tab.assets">Assets</button>
                     <button class="menu_button amy-studio-tab" data-tab="plan" data-i18n="amyCreatorStudio.studio.tab.plan">Story plan</button>
-                    ${writingControlTabMarkup()}
                     <button class="menu_button amy-studio-tab" data-tab="memory" data-i18n="amyCreatorStudio.studio.tab.memory">Memory</button>
-                    <button class="menu_button amy-studio-tab" data-tab="tools" data-i18n="amyCreatorStudio.studio.tab.tools">Safe tools</button>
                 </div>
+                <details class="amy-studio-nav-more">
+                    <summary data-i18n="amyCreatorStudio.studio.nav.more">Project and advanced settings</summary>
+                    <div class="amy-studio-tabs flex-container">
+                        ${storyProjectAdvancedTabMarkup()}
+                        <button class="menu_button amy-studio-tab" data-tab="character" data-i18n="amyCreatorStudio.studio.tab.character">Character</button>
+                        <button class="menu_button amy-studio-tab" data-tab="assets" data-i18n="amyCreatorStudio.studio.tab.assets">Assets</button>
+                        ${writingControlTabMarkup()}
+                        <button class="menu_button amy-studio-tab" data-tab="tools" data-i18n="amyCreatorStudio.studio.tab.tools">Safe tools</button>
+                    </div>
+                </details>
                 ${storyProjectMarkup()}
-                <section data-amy-tab="character">
+                <section data-amy-tab="character" class="displayNone">
                     <small data-i18n="amyCreatorStudio.studio.character.associationNote">This tab creates or imports a new character card. To associate an existing character, use Novel Project, choose the character, then save the project.</small>
                     <label><span data-i18n="amyCreatorStudio.studio.character.idea">Character idea</span><textarea id="amy-studio-idea" class="text_pole" rows="4" placeholder="Describe the character, relationship, setting, tone, and boundaries." data-i18n="[placeholder]amyCreatorStudio.studio.character.ideaPlaceholder"></textarea></label>
                     <div class="flex-container"><button id="amy-studio-generate" class="menu_button" data-i18n="amyCreatorStudio.studio.character.generate">Generate draft</button><button id="amy-studio-validate" class="menu_button" data-i18n="amyCreatorStudio.studio.character.validate">Validate</button><button id="amy-studio-import" class="menu_button" data-i18n="amyCreatorStudio.studio.character.import">Import character + lorebook</button></div>
@@ -1162,7 +1273,7 @@ function createPanel() {
         $(`[data-amy-tab="${tab}"]`).removeClass('displayNone');
         $('.amy-studio-tab').removeClass('selected');
         $(this).addClass('selected');
-        if (tab === 'project') {
+        if (tab === 'project' || tab === 'scene') {
             try {
                 await getCharacters();
             } catch (error) {
@@ -1171,7 +1282,7 @@ function createPanel() {
             projectController?.render();
         }
     });
-    $('.amy-studio-tab[data-tab="character"]').addClass('selected');
+    $('.amy-studio-tab[data-tab="scene"]').addClass('selected');
     $('#amy-studio-idea, #amy-studio-draft, #amy-studio-visual-anchor, #amy-studio-visual-style, #amy-studio-asset-detail').on('input', function () {
         const state = settings();
         const map = {
@@ -1261,6 +1372,7 @@ function createPanel() {
         getLatestAssistantText: () => [...getContext().chat].reverse()
             .find(message => !message.is_system && !message.is_user && typeof message.mes === 'string' && message.mes.trim())
             ?.mes ?? '',
+        getCompilationContext: state => currentSceneCompilationInputs(state),
         runCodexText: codexText,
         recordAudit: (tool, summary) => {
             appendAudit(settings(), { tool, status: 'approved', summary });
