@@ -127,7 +127,7 @@
   "amyCreatorStudio.studio.project.prepareReady": "可以開始寫作 · 目前焦點：{focus} · 寫作範本：{profileName} · 模型上下文已驗證 · 未注入未來劇情",
   "amyCreatorStudio.studio.project.prepareCapacityPending": "故事上下文已經就緒，但產生容量不足 · 總上下文 {contextTokens} · 單次回覆 {responseTokens} · 目標 {targetWords} 字 · 預計只能輸出約 {estimatedWords} 字",
   "amyCreatorStudio.studio.project.preparePending": "尚需一鍵準備 · 綁定：{binding} · 計畫：{plan} · 寫作範本：{profile} · 模型上下文：{context}",
-  "amyCreatorStudio.studio.project.preparationReceipt": "本次準備收據\n模型：{model}\n焦點：{focus}\n寫作範本：{profileName}\n容量：總計 {contextTokens} = 輸入 {promptTokens} + 回覆 {responseTokens} tokens\n預計輸出：約 {estimatedWords} / 目標 {targetWords} 字\n已編譯寫作上下文：約 {compiledTokens} tokens\nWorld Info 預算：{worldInfoPercent}% = 約 {worldInfoTokens} tokens\n專案引用：{characters} 個人物、{worlds} 個 World Info（僅引用，不強制全部注入）\n驗證方式：{proof}\n未來劇情：未注入",
+  "amyCreatorStudio.studio.project.preparationReceipt": "本次準備收據\n正文生成模型：{generationModel}\n工坊輔助模型：{assistantModel}\n焦點：{focus}\n寫作範本：{profileName}\n容量：總計 {contextTokens} = 輸入 {promptTokens} + 回覆 {responseTokens} tokens\n預計輸出：約 {estimatedWords} / 目標 {targetWords} 字\n已編譯寫作上下文：約 {compiledTokens} tokens\nWorld Info 預算：{worldInfoPercent}% = 約 {worldInfoTokens} tokens\n專案引用：{characters} 個人物、{worlds} 個 World Info（僅引用，不強制全部注入）\n驗證方式：{proof}\n未來劇情：未注入",
   "amyCreatorStudio.studio.project.readyYes": "就緒",
   "amyCreatorStudio.studio.project.readyNo": "待處理",
   "amyCreatorStudio.studio.project.proof.none": "不需要活動上下文",

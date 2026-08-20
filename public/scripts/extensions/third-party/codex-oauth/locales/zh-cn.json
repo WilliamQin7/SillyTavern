@@ -127,7 +127,7 @@
   "amyCreatorStudio.studio.project.prepareReady": "可以开始写作 · 当前焦点：{focus} · 写作模板：{profileName} · 模型上下文已验证 · 未注入未来剧情",
   "amyCreatorStudio.studio.project.prepareCapacityPending": "故事上下文已经就绪，但生成容量不足 · 总上下文 {contextTokens} · 单次回复 {responseTokens} · 目标 {targetWords} 字 · 预计只能输出约 {estimatedWords} 字",
   "amyCreatorStudio.studio.project.preparePending": "尚需一键准备 · 绑定：{binding} · 计划：{plan} · 写作模板：{profile} · 模型上下文：{context}",
-  "amyCreatorStudio.studio.project.preparationReceipt": "本次准备收据\n模型：{model}\n焦点：{focus}\n写作模板：{profileName}\n容量：总计 {contextTokens} = 输入 {promptTokens} + 回复 {responseTokens} tokens\n预计输出：约 {estimatedWords} / 目标 {targetWords} 字\n已编译写作上下文：约 {compiledTokens} tokens\nWorld Info 预算：{worldInfoPercent}% = 约 {worldInfoTokens} tokens\n项目引用：{characters} 个人物、{worlds} 个 World Info（仅引用，不强制全部注入）\n验证方式：{proof}\n未来剧情：未注入",
+  "amyCreatorStudio.studio.project.preparationReceipt": "本次准备收据\n正文生成模型：{generationModel}\n工坊辅助模型：{assistantModel}\n焦点：{focus}\n写作模板：{profileName}\n容量：总计 {contextTokens} = 输入 {promptTokens} + 回复 {responseTokens} tokens\n预计输出：约 {estimatedWords} / 目标 {targetWords} 字\n已编译写作上下文：约 {compiledTokens} tokens\nWorld Info 预算：{worldInfoPercent}% = 约 {worldInfoTokens} tokens\n项目引用：{characters} 个人物、{worlds} 个 World Info（仅引用，不强制全部注入）\n验证方式：{proof}\n未来剧情：未注入",
   "amyCreatorStudio.studio.project.readyYes": "就绪",
   "amyCreatorStudio.studio.project.readyNo": "待处理",
   "amyCreatorStudio.studio.project.proof.none": "无需活动上下文",

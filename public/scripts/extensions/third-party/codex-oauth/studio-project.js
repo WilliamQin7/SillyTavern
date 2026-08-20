@@ -328,7 +328,8 @@ export function bindStoryProject(deps) {
             },
         ));
         $('#amy-studio-project-preparation-receipt').text(tr('studio.project.preparationReceipt', {
-            model: deps.getCurrentModel(),
+            generationModel: deps.getGenerationModel(),
+            assistantModel: deps.getAssistantModel(),
             focus: chapter
                 ? `${chapter.title}${scene ? ` / ${scene.title}` : ''}`
                 : tr('studio.project.optionalSkipped'),

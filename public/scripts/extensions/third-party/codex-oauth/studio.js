@@ -1,12 +1,13 @@
 import { characters, chat_metadata, eventSource, event_types, getCharacters, getCurrentChatId, getMaxPromptTokens, getRequestHeaders, saveMetadata, saveSettingsDebounced, this_chid } from '../../../../script.js';
 import { extension_settings } from '../../../extensions.js';
 import { groups } from '../../../group-chats.js';
-import { oai_settings } from '../../../openai.js';
+import { getChatCompletionModel, oai_settings } from '../../../openai.js';
 import { Popup } from '../../../popup.js';
 import { getContext } from '../../../st-context.js';
 import { escapeHtml } from '../../../utils.js';
 import { createWorldInfoEntry, getWorldInfoPrompt, loadWorldInfo, saveWorldInfo, updateWorldInfoList, world_info_budget, world_info_budget_cap } from '../../../world-info.js';
 import { tr, translateStudioValidationErrors } from './i18n.js';
+import { resolveStoryGenerationModel, resolveStudioAssistantModel } from './studio-models.js';
 import { evaluateStoryGenerationReadiness, normalizeSceneBrief, normalizeStoryProjectChatState, normalizeStoryProjectSettings, storyProjectStoryKey } from './studio-project-core.js';
 import { bindStoryProject, storyProjectAdvancedTabMarkup, storyProjectMarkup, storyProjectTabMarkup } from './studio-project.js';
 import {
@@ -107,9 +108,12 @@ function persistChat({ immediate = false } = {}) {
     return Promise.resolve();
 }
 
-function currentModel() {
-    const provider = extension_settings.codex_oauth ?? {};
-    return String(provider.manualModel || provider.model || 'gpt-5.4').trim();
+function currentAssistantModel() {
+    return resolveStudioAssistantModel(extension_settings.codex_oauth);
+}
+
+function currentGenerationModel() {
+    return resolveStoryGenerationModel(oai_settings, getChatCompletionModel) || tr('studio.project.optionalSkipped');
 }
 
 async function codexText(prompt) {
@@ -119,7 +123,7 @@ async function codexText(prompt) {
         headers: getRequestHeaders(),
         body: JSON.stringify({
             chat_completion_source: PROVIDER_ID,
-            model: currentModel(),
+            model: currentAssistantModel(),
             messages: [{ role: 'user', content: prompt }],
             stream: false,
             codex_oauth: {
@@ -214,7 +218,7 @@ async function generateCodexImageBlob(prompt, size, quality = 'high') {
     const response = await fetch('/api/plugins/codex-oauth/image', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ prompt, model: currentModel(), size, quality }),
+        body: JSON.stringify({ prompt, model: currentAssistantModel(), size, quality }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data?.error?.message || tr('studio.error.imageFailed'));
@@ -432,7 +436,9 @@ async function collectProjectSceneReferences(project, state, plan, progress) {
     for (const candidate of candidates) {
         if (selected.length >= 10) break;
         if (totalChars + candidate.content.length > 3200) continue;
-        const { score: _score, order: _order, ...reference } = candidate;
+        const reference = { ...candidate };
+        delete reference.score;
+        delete reference.order;
         selected.push(reference);
         totalChars += candidate.content.length;
     }
@@ -1416,7 +1422,8 @@ function createPanel() {
         applyRecommendedGenerationCapacity,
         getCurrentSceneRequest: currentSceneWritingRequest,
         stageCurrentSceneRequest: stageCurrentSceneWritingRequest,
-        getCurrentModel: currentModel,
+        getAssistantModel: currentAssistantModel,
+        getGenerationModel: currentGenerationModel,
         recordAudit: (tool, summary) => {
             appendAudit(settings(), { tool, status: 'approved', summary });
             persist();
