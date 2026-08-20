@@ -23,6 +23,9 @@ import { formatReasoning } from '/scripts/reasoning.js';
 const MODULE_NAME = 'connection-manager';
 const NONE = '<None>';
 const EMPTY = '<Empty>';
+const CURSOR_GROK_PROFILE_NAME = 'Cursor Grok 4.6 high-fast';
+const CURSOR_GROK_BRIDGE_URL = 'http://127.0.0.1:5111/v1';
+const CURSOR_GROK_MODEL = 'grok-4.6-high-fast';
 
 const DEFAULT_SETTINGS = {
     profiles: [],
@@ -884,6 +887,65 @@ export async function init() {
     /** @type {HTMLElement} */
     const viewDetails = document.getElementById('view_connection_profile');
     const detailsContent = document.getElementById('connection_profile_details_content');
+
+    const cursorGrokSetupButton = document.getElementById('cursor_grok_quick_setup');
+    cursorGrokSetupButton.addEventListener('click', async () => {
+        if (cursorGrokSetupButton.disabled) {
+            return;
+        }
+
+        cursorGrokSetupButton.disabled = true;
+        const spinner = new ConnectionManagerSpinner();
+        spinner.start();
+
+        try {
+            const args = getNamedArguments();
+            await SlashCommandParser.commands.api.callback(args, 'custom');
+            await SlashCommandParser.commands['api-url'].callback(
+                getNamedArguments({ connect: 'false' }),
+                CURSOR_GROK_BRIDGE_URL,
+            );
+            await SlashCommandParser.commands.model.callback(args, CURSOR_GROK_MODEL);
+            $('#stream_toggle').prop('checked', true).trigger('input');
+
+            let profile = extension_settings.connectionManager.profiles.find(item => item.name === CURSOR_GROK_PROFILE_NAME);
+            if (profile) {
+                const oldProfile = structuredClone(profile);
+                await updateConnectionProfile(profile);
+                await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, oldProfile, profile);
+            } else {
+                profile = await createConnectionProfile(CURSOR_GROK_PROFILE_NAME);
+                if (!profile) {
+                    throw new Error(t`Could not create the Cursor Grok connection profile.`);
+                }
+                extension_settings.connectionManager.profiles.push(profile);
+                await eventSource.emit(event_types.CONNECTION_PROFILE_CREATED, profile);
+            }
+
+            extension_settings.connectionManager.selectedProfile = profile.id;
+            saveSettingsDebounced();
+            renderConnectionProfiles(profiles);
+            toggleProfileSpecificButtons();
+            await renderDetailsContent(detailsContent);
+            await eventSource.emit(event_types.CONNECTION_PROFILE_LOADED, profile.name);
+
+            $('#api_button_openai').trigger('click');
+            await waitUntilCondition(() => online_status === t`Valid`, 15000, 100, { rejectOnTimeout: false });
+
+            if (online_status === t`Valid`) {
+                toastr.success(t`Cursor Grok bridge configured and connected.`, CURSOR_GROK_PROFILE_NAME);
+            } else {
+                toastr.warning(t`Cursor Grok bridge profile was saved, but the local bridge is not reachable. Start it and press Connect.`, CURSOR_GROK_PROFILE_NAME);
+            }
+        } catch (error) {
+            console.error('Failed to configure the Cursor Grok bridge:', error);
+            toastr.error(error?.message || t`Could not configure the Cursor Grok bridge.`);
+        } finally {
+            spinner.stop();
+            cursorGrokSetupButton.disabled = false;
+        }
+    });
+
     viewDetails.addEventListener('click', async () => {
         viewDetails.classList.toggle('active');
         detailsContent.classList.toggle('hidden');

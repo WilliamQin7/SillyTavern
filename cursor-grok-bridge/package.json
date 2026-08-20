@@ -1,0 +1,19 @@
+{
+  "name": "@williamqin/sillytavern-cursor-grok-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "auth:login": "node src/login.js",
+    "probe": "node src/probe.js",
+    "smoke": "node src/smoke.js",
+    "start": "node src/server.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "@cursor/sdk": "1.0.28"
+  }
+}
